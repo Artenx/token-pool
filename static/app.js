@@ -29,6 +29,71 @@ async function checkAuth() {
     }
 }
 
+// ========== 模型映射管理 ==========
+
+// 更新模型映射区域的显示/隐藏
+function updateModelMappingsVisibility() {
+    const poolId = document.getElementById('ep-pool-id').value;
+    const mappingsGroup = document.getElementById('model-mappings-group');
+    
+    if (!poolId || !mappingsGroup) {
+        if (mappingsGroup) mappingsGroup.style.display = 'none';
+        return;
+    }
+    
+    // 查找池的模型模式
+    const pool = currentPools.find(p => p.id === poolId);
+    if (pool && pool.model_mode === 'mapping') {
+        mappingsGroup.style.display = 'block';
+    } else {
+        mappingsGroup.style.display = 'none';
+    }
+}
+
+// 添加模型映射行
+function addModelMappingRow(clientModel, endpointModel) {
+    const container = document.getElementById('model-mappings-list');
+    if (!container) return;
+    
+    const row = document.createElement('div');
+    row.style.cssText = 'display: flex; gap: 8px; margin-bottom: 8px; align-items: center;';
+    row.innerHTML = `
+        <input type="text" class="mapping-client-model" placeholder="客户端模型名" value="${escapeHtml(clientModel)}" style="flex: 1;">
+        <span style="color: var(--text-tertiary);">→</span>
+        <input type="text" class="mapping-endpoint-model" placeholder="端点模型名" value="${escapeHtml(endpointModel)}" style="flex: 1;">
+        <button type="button" class="btn btn-small btn-danger" onclick="this.parentElement.remove()">删除</button>
+    `;
+    container.appendChild(row);
+}
+
+// 获取模型映射数据
+function getModelMappings() {
+    const container = document.getElementById('model-mappings-list');
+    if (!container) return [];
+    
+    const mappings = [];
+    const rows = container.querySelectorAll('div');
+    rows.forEach(row => {
+        const clientModel = row.querySelector('.mapping-client-model')?.value?.trim();
+        const endpointModel = row.querySelector('.mapping-endpoint-model')?.value?.trim();
+        if (clientModel && endpointModel) {
+            mappings.push({ client_model: clientModel, endpoint_model: endpointModel });
+        }
+    });
+    return mappings;
+}
+
+// 加载模型映射数据
+function loadModelMappings(mappings) {
+    const container = document.getElementById('model-mappings-list');
+    if (!container) return;
+    
+    container.innerHTML = '';
+    if (mappings && mappings.length > 0) {
+        mappings.forEach(m => addModelMappingRow(m.client_model, m.endpoint_model));
+    }
+}
+
 // 更新端点完整路径显示
 function updateEndpointFullUrl() {
     const epUrl = document.getElementById('ep-url');
@@ -115,6 +180,20 @@ function initEventListeners() {
         epLimit.addEventListener('input', updateResetPolicy);
         // 初始化时也检查一次
         updateResetPolicy();
+    }
+
+    // 添加模型映射按钮
+    const btnAddMapping = document.getElementById('btn-add-mapping');
+    if (btnAddMapping) {
+        btnAddMapping.addEventListener('click', () => {
+            addModelMappingRow('', '');
+        });
+    }
+
+    // 监听端点池选择变化，控制模型映射显示
+    const epPoolId = document.getElementById('ep-pool-id');
+    if (epPoolId) {
+        epPoolId.addEventListener('change', updateModelMappingsVisibility);
     }
 
     // 浏览模型按钮（表单内）
@@ -559,6 +638,10 @@ function addEndpointToPool(poolId) {
         poolField.value = poolId;
     }
     
+    // 清空模型映射并更新显示
+    loadModelMappings([]);
+    updateModelMappingsVisibility();
+    
     showModal('endpoint-modal');
 }
 
@@ -587,18 +670,26 @@ async function editEndpoint(id) {
     // 设置重置方式（在触发 input 事件后，因为 input 事件可能会改变它）
     document.getElementById('ep-reset').value = ep.reset_policy || 'manual';
 
-    // 获取完整端点信息以显示 API Key
+    // 获取完整端点信息以显示 API Key 和模型映射
     try {
         const res = await fetch(`${API_BASE}/endpoints/${id}`);
         if (res.ok) {
             const fullEp = await res.json();
             document.getElementById('ep-apikey').value = fullEp.config.api_key || '';
+            // 加载模型映射
+            loadModelMappings(fullEp.config.model_mappings || []);
         } else {
             document.getElementById('ep-apikey').value = '';
+            loadModelMappings([]);
         }
     } catch (e) {
         document.getElementById('ep-apikey').value = '';
+        loadModelMappings([]);
     }
+
+    // 设置池ID并更新模型映射显示
+    document.getElementById('ep-pool-id').value = ep.pool_id || '';
+    updateModelMappingsVisibility();
 
     showModal('endpoint-modal');
 }
@@ -887,7 +978,8 @@ async function handleSaveEndpoint(e) {
         timeout: parseInt(document.getElementById('ep-timeout').value) || 300,
         reset_policy: resetPolicy,
         enabled: document.getElementById('ep-enabled').checked,
-        pool_id: poolId || null
+        pool_id: poolId || null,
+        model_mappings: getModelMappings()
     };
 
     // 编辑时如果api_key为空，使用原来的值

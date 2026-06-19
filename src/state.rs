@@ -684,14 +684,20 @@ impl AppState {
         endpoint: &EndpointState,
         client_model: &str,
     ) -> String {
-        // 透传模式：直接返回客户端的模型名称
-        if pool.model_mode == ModelMode::Passthrough {
+        // 映射模式：使用手动配置的映射关系
+        if pool.model_mode == ModelMode::Mapping {
+            if let Some(mapping) = endpoint.config.model_mappings.iter().find(|m| m.client_model == client_model) {
+                return mapping.endpoint_model.clone();
+            }
+            // 没有找到映射，返回原始名称
             return client_model.to_string();
         }
 
-        // 映射模式：先检查手动配置的映射
-        if let Some(mapping) = endpoint.config.model_mappings.iter().find(|m| m.client_model == client_model) {
-            return mapping.endpoint_model.clone();
+        // 透传模式：自动匹配模型名称（不区分大小写，后缀匹配）
+        // 先检查是否有缓存，如果没有则尝试获取
+        if self.get_cached_models(&endpoint.config.id).is_none() {
+            // 缓存未命中，返回原始名称（异步获取缓存由调用方处理）
+            return client_model.to_string();
         }
 
         // 尝试从缓存中匹配
