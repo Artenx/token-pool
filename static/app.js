@@ -317,7 +317,7 @@ async function loadDashboard() {
         document.getElementById('stat-total').textContent = stats.total_endpoints;
         document.getElementById('stat-active-sub').textContent = `活跃: ${stats.active_endpoints}`;
         document.getElementById('stat-used').textContent = formatNumber(stats.total_tokens_used);
-        document.getElementById('stat-limit-sub').textContent = `限额: ${formatNumber(stats.total_tokens_limit)}`;
+        document.getElementById('stat-limit-sub').textContent = `限额: ${formatLimit(stats.total_tokens_limit)}`;
         document.getElementById('stat-usage-rate').textContent = `${usageRate}%`;
         document.getElementById('stat-usage-bar').style.width = `${usageBar}%`;
         document.getElementById('stat-usage-bar').className = `progress-fill ${usageClass}`;
@@ -432,7 +432,7 @@ function renderEndpointsOverview() {
                     </div>
                     <div class="endpoint-detail">
                         <label>已用/限额</label>
-                        <span>${formatNumber(ep.tokens_used)} / ${formatNumber(ep.token_limit)}</span>
+                        <span>${formatNumber(ep.tokens_used)} / ${formatLimit(ep.token_limit)}</span>
                     </div>
                     <div class="endpoint-detail">
                         <label>请求数</label>
@@ -484,11 +484,11 @@ function renderEndpointsList() {
                     </div>
                     <div class="endpoint-detail">
                         <label>已用/限额</label>
-                        <span>${formatNumber(ep.tokens_used)} / ${formatNumber(ep.token_limit)}</span>
+                        <span>${formatNumber(ep.tokens_used)} / ${formatLimit(ep.token_limit)}</span>
                     </div>
                     <div class="endpoint-detail">
                         <label>剩余</label>
-                        <span>${formatNumber(ep.tokens_remaining)}</span>
+                        <span>${formatLimit(ep.tokens_remaining)}</span>
                     </div>
                 </div>
                 <div class="progress-bar">
@@ -1498,7 +1498,7 @@ function renderPoolsList() {
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 8px;">
                         <span>URL: ${truncate(ep.url, 25)}</span>
                         <span>类型: ${ep.api_type.toUpperCase()}</span>
-                        <span>已用: ${formatNumber(ep.tokens_used)} / ${formatNumber(ep.token_limit)}</span>
+                        <span>已用: ${formatNumber(ep.tokens_used)} / ${formatLimit(ep.token_limit)}</span>
                         <span>请求: ${ep.total_requests}</span>
                     </div>
                     <div class="progress-bar" style="height: 3px; margin-bottom: 8px;">
@@ -2028,6 +2028,12 @@ function formatNumber(num) {
     if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
     if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
     return num.toString();
+}
+
+// 格式化限额数字（12个9直接显示）
+function formatLimit(num) {
+    if (num === 999999999999) return '999999999999';
+    return formatNumber(num);
 }
 
 function truncate(str, len) {
