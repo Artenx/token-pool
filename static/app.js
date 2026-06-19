@@ -1796,7 +1796,6 @@ function renderPoolsList() {
                             ${ep.enabled ? '禁用' : '启用'}
                         </button>
                         <button class="btn btn-small" onclick="resetEndpoint('${escapeAttr(ep.id)}')" style="font-size: 0.6875rem;">重置</button>
-                        ${pool.model_mode === 'mapping' ? `<button class="btn btn-small" onclick="showEndpointMappingModal('${escapeAttr(ep.id)}')" style="font-size: 0.6875rem;">配置映射</button>` : ''}
                         <button class="btn btn-small btn-warning" onclick="removeEndpointFromPool('${escapeAttr(ep.id)}')" style="font-size: 0.6875rem;">从池中移除</button>
                     </div>
                 </div>
@@ -2367,8 +2366,81 @@ async function editPool(id) {
     document.getElementById('pool-algorithm').value = pool.schedule_algorithm;
     document.getElementById('pool-model-mode').value = pool.model_mode || 'passthrough';
     
+    // 更新算法说明
     updatePoolAlgoDescription();
+    
+    // 更新端点映射配置显示
+    updatePoolEndpointsMapping(id, pool.model_mode);
+    
+    // 监听模型模式变化
+    const modelModeSelect = document.getElementById('pool-model-mode');
+    modelModeSelect.onchange = () => {
+        updatePoolEndpointsMapping(id, modelModeSelect.value);
+    };
+    
     showModal('pool-modal');
+}
+
+// 更新池端点映射配置显示
+async function updatePoolEndpointsMapping(poolId, modelMode) {
+    const container = document.getElementById('pool-endpoints-mapping');
+    if (!container) return;
+    
+    // 只在映射模式下显示
+    if (modelMode !== 'mapping') {
+        container.style.display = 'none';
+        return;
+    }
+    
+    container.style.display = 'block';
+    
+    // 获取池中的端点
+    const poolEndpoints = currentEndpoints.filter(ep => ep.pool_id === poolId);
+    
+    if (poolEndpoints.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-tertiary); font-size: 0.875rem;">池中暂无端点</p>';
+        return;
+    }
+    
+    // 渲染端点列表
+    let html = '<div style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 12px;">端点模型映射配置</div>';
+    
+    for (const ep of poolEndpoints) {
+        // 获取端点完整信息（包含映射）
+        try {
+            const res = await fetch(`${API_BASE}/endpoints/${ep.id}`);
+            if (res.ok) {
+                const fullEp = await res.json();
+                const mappings = fullEp.config.model_mappings || [];
+                const mappingText = mappings.length > 0 
+                    ? mappings.map(m => `${m.client_model} → ${m.endpoint_model}`).join(', ')
+                    : '未配置';
+                
+                html += `
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px; background: var(--bg-tertiary); border-radius: var(--radius-sm); margin-bottom: 8px;">
+                        <div>
+                            <span style="font-weight: 500;">${escapeHtml(ep.name)}</span>
+                            <span style="font-size: 0.75rem; color: var(--text-tertiary); margin-left: 8px;">映射: ${escapeHtml(mappingText)}</span>
+                        </div>
+                        <button type="button" class="btn btn-small" onclick="editEndpointMappingFromPool('${escapeAttr(ep.id)}')">编辑映射</button>
+                    </div>
+                `;
+            }
+        } catch (e) {
+            console.error('获取端点信息失败:', e);
+        }
+    }
+    
+    container.innerHTML = html;
+}
+
+// 从池编辑页面打开端点映射编辑
+async function editEndpointMappingFromPool(endpointId) {
+    // 先关闭池编辑对话框
+    hideModal('pool-modal');
+    
+    // 打开端点映射对话框
+    await showEndpointMappingModal(endpointId);
 }
 
 // 保存池
