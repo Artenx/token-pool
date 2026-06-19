@@ -422,6 +422,28 @@
             </div>
         </div>
 
+        <!-- 端点映射配置对话框 -->
+        <div id="endpoint-mapping-modal" class="modal" style="display:none">
+            <div class="modal-content" style="max-width: 500px;">
+                <div class="modal-header">
+                    <h2 id="endpoint-mapping-title">配置模型映射</h2>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <input type="hidden" id="mapping-endpoint-id">
+                    <div style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 12px;">
+                        为端点 <strong id="mapping-endpoint-name"></strong> 配置模型映射关系
+                    </div>
+                    <div id="endpoint-mapping-list"></div>
+                    <button type="button" class="btn btn-small" id="btn-add-endpoint-mapping" style="margin-top: 8px;">+ 添加映射</button>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn modal-close">取消</button>
+                    <button type="button" class="btn btn-primary" id="btn-save-endpoint-mapping">保存</button>
+                </div>
+            </div>
+        </div>
+
         <div id="toast" class="toast" style="display:none"></div>
 
         <footer class="app-footer">

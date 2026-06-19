@@ -261,6 +261,18 @@ function initEventListeners() {
         btnConfirmAddEndpoints.addEventListener('click', confirmAddEndpointsToPool);
     }
 
+    // 添加端点映射按钮
+    const btnAddEndpointMapping = document.getElementById('btn-add-endpoint-mapping');
+    if (btnAddEndpointMapping) {
+        btnAddEndpointMapping.addEventListener('click', addEndpointMappingRow);
+    }
+
+    // 保存端点映射按钮
+    const btnSaveEndpointMapping = document.getElementById('btn-save-endpoint-mapping');
+    if (btnSaveEndpointMapping) {
+        btnSaveEndpointMapping.addEventListener('click', saveEndpointMapping);
+    }
+
     // 添加对外API
     document.getElementById('btn-add-api').addEventListener('click', () => {
         document.getElementById('api-modal-title').textContent = '添加对外接口';
@@ -1784,6 +1796,7 @@ function renderPoolsList() {
                             ${ep.enabled ? '禁用' : '启用'}
                         </button>
                         <button class="btn btn-small" onclick="resetEndpoint('${escapeAttr(ep.id)}')" style="font-size: 0.6875rem;">重置</button>
+                        ${pool.model_mode === 'mapping' ? `<button class="btn btn-small" onclick="showEndpointMappingModal('${escapeAttr(ep.id)}')" style="font-size: 0.6875rem;">配置映射</button>` : ''}
                         <button class="btn btn-small btn-warning" onclick="removeEndpointFromPool('${escapeAttr(ep.id)}')" style="font-size: 0.6875rem;">从池中移除</button>
                     </div>
                 </div>
@@ -1835,6 +1848,152 @@ function renderPoolsList() {
             </div>
         `;
     }).join('');
+}
+
+// ========== 端点映射配置 ==========
+
+// 显示端点映射配置对话框
+async function showEndpointMappingModal(endpointId) {
+    const ep = currentEndpoints.find(e => e.id === endpointId);
+    if (!ep) return;
+    
+    document.getElementById('mapping-endpoint-id').value = endpointId;
+    document.getElementById('mapping-endpoint-name').textContent = ep.name;
+    
+    // 获取端点完整信息（包含模型映射）
+    try {
+        const res = await fetch(`${API_BASE}/endpoints/${endpointId}`);
+        if (res.ok) {
+            const fullEp = await res.json();
+            const mappings = fullEp.config.model_mappings || [];
+            
+            // 获取模型列表
+            const modelsRes = await fetch(`${API_BASE}/endpoints/models`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: fullEp.config.name,
+                    url: fullEp.config.url,
+                    api_type: fullEp.config.api_type,
+                    api_key: fullEp.config.api_key,
+                    token_limit: 1000,
+                    reset_policy: 'manual',
+                    enabled: true
+                })
+            });
+            const modelsResult = await modelsRes.json();
+            const models = modelsResult.success ? (modelsResult.models || []).map(m => typeof m === 'object' ? m.id : m) : [];
+            
+            // 渲染映射列表
+            renderEndpointMappingList(mappings, models);
+        }
+    } catch (e) {
+        console.error('获取端点信息失败:', e);
+    }
+    
+    showModal('endpoint-mapping-modal');
+}
+
+// 渲染端点映射列表
+function renderEndpointMappingList(mappings, models) {
+    const container = document.getElementById('endpoint-mapping-list');
+    if (!container) return;
+    
+    // 存储模型列表
+    container.dataset.models = JSON.stringify(models);
+    
+    container.innerHTML = '';
+    if (mappings.length > 0) {
+        mappings.forEach(m => addEndpointMappingRowWithData(m.client_model, m.endpoint_model, models));
+    }
+}
+
+// 添加端点映射行
+function addEndpointMappingRow() {
+    const container = document.getElementById('endpoint-mapping-list');
+    const models = container.dataset.models ? JSON.parse(container.dataset.models) : [];
+    addEndpointMappingRowWithData('', '', models);
+}
+
+// 添加端点映射行（带数据）
+function addEndpointMappingRowWithData(clientModel, endpointModel, models) {
+    const container = document.getElementById('endpoint-mapping-list');
+    if (!container) return;
+    
+    let modelOptions = '<option value="">选择端点模型</option>';
+    models.forEach(m => {
+        const selected = m === endpointModel ? 'selected' : '';
+        modelOptions += `<option value="${escapeAttr(m)}" ${selected}>${escapeHtml(m)}</option>`;
+    });
+    
+    const row = document.createElement('div');
+    row.style.cssText = 'display: flex; gap: 8px; margin-bottom: 8px; align-items: center;';
+    row.innerHTML = `
+        <input type="text" class="ep-mapping-client" placeholder="客户端模型名" value="${escapeAttr(clientModel)}" style="flex: 1;">
+        <span style="color: var(--text-tertiary);">→</span>
+        <select class="ep-mapping-endpoint" style="flex: 1;">
+            ${modelOptions}
+        </select>
+        <button type="button" class="btn btn-small btn-danger" onclick="this.parentElement.remove()">删除</button>
+    `;
+    container.appendChild(row);
+}
+
+// 保存端点映射
+async function saveEndpointMapping() {
+    const endpointId = document.getElementById('mapping-endpoint-id').value;
+    const container = document.getElementById('endpoint-mapping-list');
+    
+    // 收集映射数据
+    const mappings = [];
+    const rows = container.querySelectorAll('div');
+    rows.forEach(row => {
+        const clientModel = row.querySelector('.ep-mapping-client')?.value?.trim();
+        const endpointModel = row.querySelector('.ep-mapping-endpoint')?.value;
+        if (clientModel && endpointModel) {
+            mappings.push({ client_model: clientModel, endpoint_model: endpointModel });
+        }
+    });
+    
+    // 获取端点完整信息
+    try {
+        const getRes = await fetch(`${API_BASE}/endpoints/${endpointId}`);
+        if (!getRes.ok) {
+            showToast('获取端点信息失败', 'error');
+            return;
+        }
+        const fullEp = await getRes.json();
+        
+        // 更新端点映射
+        const res = await fetch(`${API_BASE}/endpoints/${endpointId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: fullEp.config.name,
+                url: fullEp.config.url,
+                api_type: fullEp.config.api_type,
+                api_key: fullEp.config.api_key,
+                token_limit: fullEp.config.token_limit,
+                timeout: fullEp.config.timeout || 300,
+                reset_policy: fullEp.config.reset_policy || 'manual',
+                enabled: fullEp.config.enabled,
+                pool_id: fullEp.config.pool_id,
+                model_mappings: mappings
+            })
+        });
+        
+        if (res.ok) {
+            showToast('模型映射已保存', 'success');
+            hideModal('endpoint-mapping-modal');
+            // 刷新数据
+            loadPoolsPage();
+        } else {
+            const data = await res.json();
+            showToast(data.error?.message || '保存失败', 'error');
+        }
+    } catch (e) {
+        showToast('保存失败: ' + e.message, 'error');
+    }
 }
 
 // 加载池选项到下拉框
