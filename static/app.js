@@ -1446,7 +1446,7 @@ function renderApisList() {
                     </div>
                 </div>
                 <div style="margin-top: 8px; padding: 8px 12px; background: var(--bg-secondary); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-secondary); word-break: break-all;">
-                    调用示例: ${escapeHtml(fullCallUrl)}
+                    调用URL: ${escapeHtml(fullCallUrl)}
                 </div>
                 <div class="endpoint-actions">
                     <button class="btn btn-small" onclick="editApi('${escapeAttr(api.id)}')">编辑</button>
@@ -2024,9 +2024,10 @@ function formatNumber(num) {
     return num.toString();
 }
 
-// 格式化限额数字（12个9直接显示）
+// 格式化限额数字（接近12个9时直接显示）
 function formatLimit(num) {
-    if (num === 999999999999) return '999999999999';
+    // 大于 999999999000 时都显示为 999999999999
+    if (num >= 999999999000) return '999999999999';
     return formatNumber(num);
 }
 
