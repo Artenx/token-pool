@@ -1220,6 +1220,7 @@ function renderAvailableEndpointsList(endpoints, isMappingMode = false) {
         // 映射模式下显示模型映射配置
         const mappingHtml = isMappingMode ? `
             <div class="endpoint-mapping-config" style="margin-top: 8px; padding: 8px; background: var(--bg-secondary); border-radius: var(--radius-sm); display: none;">
+                <div class="available-models" data-models="[]"></div>
                 <div style="font-size: 0.75rem; color: var(--text-tertiary); margin-bottom: 8px;">配置模型映射（客户端模型名 → 端点模型名）</div>
                 <div class="mapping-rows" data-endpoint-id="${ep.id}"></div>
                 <button type="button" class="btn btn-small" onclick="addMappingRowInSelect('${ep.id}')" style="margin-top: 4px;">+ 添加映射</button>
@@ -1248,14 +1249,58 @@ function renderAvailableEndpointsList(endpoints, isMappingMode = false) {
 }
 
 // 切换模型映射配置显示
-function toggleMappingConfig(checkbox, endpointId) {
+async function toggleMappingConfig(checkbox, endpointId) {
     // 找到包含 checkbox 的最外层 div
     const container = checkbox.closest('div[style*="padding"]');
     if (container) {
         const mappingConfig = container.querySelector('.endpoint-mapping-config');
         if (mappingConfig) {
             mappingConfig.style.display = checkbox.checked ? 'block' : 'none';
+            
+            // 勾选时加载模型列表
+            if (checkbox.checked) {
+                await loadEndpointModelsForSelect(endpointId, container);
+            }
         }
+    }
+}
+
+// 为选择端点对话框加载模型列表
+async function loadEndpointModelsForSelect(endpointId, container) {
+    const modelsContainer = container.querySelector('.available-models');
+    if (!modelsContainer) return;
+    
+    try {
+        // 获取端点完整信息
+        const epRes = await fetch(`${API_BASE}/endpoints/${endpointId}`);
+        if (!epRes.ok) return;
+        const fullEp = await epRes.json();
+        
+        // 获取模型列表
+        const res = await fetch(`${API_BASE}/endpoints/models`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: fullEp.config.name,
+                url: fullEp.config.url,
+                api_type: fullEp.config.api_type,
+                api_key: fullEp.config.api_key,
+                token_limit: 1000,
+                reset_policy: 'manual',
+                enabled: true
+            })
+        });
+        
+        const result = await res.json();
+        if (result.success && result.models && result.models.length > 0) {
+            // 存储模型列表到容器
+            modelsContainer.dataset.models = JSON.stringify(result.models);
+        } else {
+            modelsContainer.dataset.models = '[]';
+        }
+    } catch (e) {
+        console.error('获取模型列表失败:', e);
+        modelsContainer.dataset.models = '[]';
     }
 }
 
@@ -1264,12 +1309,24 @@ function addMappingRowInSelect(endpointId) {
     const container = document.querySelector(`.mapping-rows[data-endpoint-id="${endpointId}"]`);
     if (!container) return;
     
+    // 获取模型列表
+    const modelsContainer = container.closest('.endpoint-mapping-config')?.querySelector('.available-models');
+    const models = modelsContainer?.dataset.models ? JSON.parse(modelsContainer.dataset.models) : [];
+    
+    // 构建模型选项
+    let modelOptions = '<option value="">选择端点模型</option>';
+    models.forEach(m => {
+        modelOptions += `<option value="${escapeAttr(m)}">${escapeHtml(m)}</option>`;
+    });
+    
     const row = document.createElement('div');
     row.style.cssText = 'display: flex; gap: 8px; margin-bottom: 4px; align-items: center;';
     row.innerHTML = `
         <input type="text" class="select-mapping-client" placeholder="客户端模型名" style="flex: 1; font-size: 0.75rem;">
         <span style="color: var(--text-tertiary);">→</span>
-        <input type="text" class="select-mapping-endpoint" placeholder="端点模型名" style="flex: 1; font-size: 0.75rem;">
+        <select class="select-mapping-endpoint" style="flex: 1; font-size: 0.75rem;">
+            ${modelOptions}
+        </select>
         <button type="button" class="btn btn-small btn-danger" onclick="this.parentElement.remove()" style="font-size: 0.625rem;">删除</button>
     `;
     container.appendChild(row);
