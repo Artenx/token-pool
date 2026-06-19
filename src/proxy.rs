@@ -1,0 +1,348 @@
+use crate::error::AppError;
+use crate::models::*;
+use crate::scheduler::Scheduler;
+use crate::state::AppState;
+use actix_web::{web, HttpRequest, HttpResponse};
+use futures_util::StreamExt;
+use tracing::{debug, error, warn};
+
+/// 处理API请求转发（基于对外API和池）
+pub async fn forward_request(
+    state: &AppState,
+    req: &HttpRequest,
+    body: bytes::Bytes,
+    path: &str,
+) -> Result<HttpResponse, AppError> {
+    // 匹配对外API
+    let exposed_api = state.match_exposed_api(path)
+        .ok_or_else(|| AppError::NotFound(format!("未找到匹配的对外API: {}", path)))?;
+
+    // 获取池信息
+    let pool = state.get_pool(&exposed_api.pool_id)
+        .ok_or_else(|| AppError::Internal(format!("池不存在: {}", exposed_api.pool_id)))?;
+
+    let algorithm = pool.schedule_algorithm.clone();
+
+    // 计算最大重试次数
+    let available_count = state.available_endpoint_ids_in_pool(&pool.id).len();
+    let max_retries = match algorithm {
+        ScheduleAlgorithm::Random => available_count,
+        _ => 1,
+    };
+
+    let mut last_error = None;
+    let mut tried_ids: Vec<String> = Vec::new();
+
+    for attempt in 0..max_retries {
+        let endpoint_id = if attempt == 0 {
+            Scheduler::select_endpoint(state, &pool.id, &algorithm)
+                .ok_or_else(|| AppError::Proxy("池中没有可用的代理端点".to_string()))?
+        } else {
+            let last_id = tried_ids.last().unwrap();
+            Scheduler::select_next_for_retry(state, &pool.id, last_id)
+                .ok_or_else(|| AppError::Proxy("所有代理端点均不可用".to_string()))?
+        };
+
+        tried_ids.push(endpoint_id.clone());
+
+        let endpoint = state
+            .get_endpoint(&endpoint_id)
+            .ok_or_else(|| AppError::Proxy(format!("端点不存在: {}", endpoint_id)))?;
+
+        debug!(
+            "尝试转发请求到端点 {} ({}) (尝试 {}/{})",
+            endpoint.config.name, endpoint_id, attempt + 1, max_retries
+        );
+
+        // 计算实际路径（去掉对外API的前缀）
+        let actual_path = path.strip_prefix(&exposed_api.prefix).unwrap_or(path);
+        let target_path = format!("/v1{}", actual_path);
+
+        match forward_to_endpoint(state, req, &body, &endpoint, &target_path, &exposed_api.api_type).await {
+            Ok(response) => {
+                return Ok(response);
+            }
+            Err(e) => {
+                warn!("端点 {} 请求失败: {}", endpoint.config.name, e);
+                state.increment_endpoint_errors(&endpoint_id);
+                last_error = Some(e);
+
+                if algorithm != ScheduleAlgorithm::Random {
+                    break;
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| AppError::Proxy("转发请求失败".to_string())))
+}
+
+/// 处理流式响应转发
+pub async fn forward_stream_request(
+    state: web::Data<AppState>,
+    req: &HttpRequest,
+    body: bytes::Bytes,
+    path: &str,
+) -> Result<HttpResponse, AppError> {
+    // 匹配对外API
+    let exposed_api = state.match_exposed_api(path)
+        .ok_or_else(|| AppError::NotFound(format!("未找到匹配的对外API: {}", path)))?;
+
+    // 获取池信息
+    let pool = state.get_pool(&exposed_api.pool_id)
+        .ok_or_else(|| AppError::Internal(format!("池不存在: {}", exposed_api.pool_id)))?;
+
+    let algorithm = pool.schedule_algorithm.clone();
+
+    let endpoint_id = Scheduler::select_endpoint(state.get_ref(), &pool.id, &algorithm)
+        .ok_or_else(|| AppError::Proxy("池中没有可用的代理端点".to_string()))?;
+
+    let endpoint = state
+        .get_endpoint(&endpoint_id)
+        .ok_or_else(|| AppError::Proxy(format!("端点不存在: {}", endpoint_id)))?;
+
+    // 计算实际路径
+    let actual_path = path.strip_prefix(&exposed_api.prefix).unwrap_or(path);
+    let target_path = format!("/v1{}", actual_path);
+    let target_url = format!("{}/{}", endpoint.config.url.trim_end_matches('/'), target_path.trim_start_matches('/'));
+
+    debug!("流式转发到: {}", target_url);
+
+    let mut request_builder = state.http_client.request(
+        reqwest::Method::from_bytes(req.method().as_str().as_bytes())
+            .map_err(|e| AppError::Proxy(format!("无效的HTTP方法: {}", e)))?,
+        &target_url,
+    );
+
+    // 复制请求头
+    for (key, value) in req.headers() {
+        let key_str = key.as_str().to_lowercase();
+        if key_str != "host" && key_str != "content-length" {
+            if let Ok(v) = value.to_str() {
+                request_builder = request_builder.header(key.as_str(), v);
+            }
+        }
+    }
+
+    // 设置认证头
+    match endpoint.config.api_type {
+        ApiType::OpenAI | ApiType::OpenAIResponses => {
+            request_builder = request_builder.header(
+                "Authorization",
+                format!("Bearer {}", endpoint.config.api_key),
+            );
+        }
+        ApiType::Anthropic => {
+            request_builder = request_builder.header("x-api-key", &endpoint.config.api_key);
+            request_builder = request_builder.header("anthropic-version", "2023-06-01");
+        }
+    }
+
+    request_builder = request_builder.body(body.to_vec());
+
+    let response = request_builder
+        .send()
+        .await
+        .map_err(|e| AppError::Proxy(format!("请求发送失败: {}", e)))?;
+
+    let resp_status = response.status();
+    if resp_status != 200 {
+        let error_body = response.text().await.unwrap_or_default();
+        return Err(AppError::Proxy(format!(
+            "上游返回状态 {}: {}",
+            resp_status, error_body
+        )));
+    }
+
+    // 流式转发 - 同时收集token使用量
+    let stream = response.bytes_stream();
+    let ep_id = endpoint.config.id.clone();
+    let ep_api_type = endpoint.config.api_type.clone();
+    let state_clone = state.clone();
+
+    let body_stream = actix_web::HttpResponse::Ok()
+        .content_type("text/event-stream")
+        .insert_header(("Cache-Control", "no-cache"))
+        .insert_header(("Connection", "keep-alive"))
+        .streaming({
+            let mut buffer = String::new();
+            stream.map(move |chunk| {
+                let chunk = chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+                if let Ok(data) = &chunk {
+                    if let Ok(text) = std::str::from_utf8(data) {
+                        buffer.push_str(text);
+                        while let Some(line_end) = buffer.find('\n') {
+                            let line = buffer[..line_end].trim().to_string();
+                            buffer = buffer[line_end + 1..].to_string();
+                            if line.starts_with("data: ") && !line.contains("[DONE]") {
+                                let json_str = &line[6..];
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                    if json.get("usage").is_some() {
+                                        let tokens = parse_token_usage(json_str.as_bytes(), &ep_api_type);
+                                        if tokens > 0 {
+                                            state_clone.update_endpoint_tokens(&ep_id, tokens);
+                                            tracing::debug!("流式响应 token 使用量: {}", tokens);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                chunk
+            })
+        });
+
+    Ok(body_stream)
+}
+
+/// 转发请求到指定端点
+async fn forward_to_endpoint(
+    state: &AppState,
+    req: &HttpRequest,
+    body: &bytes::Bytes,
+    endpoint: &EndpointState,
+    path: &str,
+    _api_type: &ApiType,
+) -> Result<HttpResponse, AppError> {
+    let target_url = format!("{}/{}", endpoint.config.url.trim_end_matches('/'), path.trim_start_matches('/'));
+    debug!("转发到: {}", target_url);
+
+    let mut request_builder = state.http_client.request(
+        reqwest::Method::from_bytes(req.method().as_str().as_bytes())
+            .map_err(|e| AppError::Proxy(format!("无效的HTTP方法: {}", e)))?,
+        &target_url,
+    );
+
+    // 复制请求头
+    for (key, value) in req.headers() {
+        let key_str = key.as_str().to_lowercase();
+        if key_str != "host" && key_str != "content-length" {
+            if let Ok(v) = value.to_str() {
+                request_builder = request_builder.header(key.as_str(), v);
+            }
+        }
+    }
+
+    // 设置认证头
+    match endpoint.config.api_type {
+        ApiType::OpenAI | ApiType::OpenAIResponses => {
+            request_builder = request_builder.header(
+                "Authorization",
+                format!("Bearer {}", endpoint.config.api_key),
+            );
+        }
+        ApiType::Anthropic => {
+            request_builder = request_builder.header("x-api-key", &endpoint.config.api_key);
+            request_builder = request_builder.header("anthropic-version", "2023-06-01");
+        }
+    }
+
+    if req.headers().get("content-type").is_none() {
+        request_builder = request_builder.header("Content-Type", "application/json");
+    }
+
+    request_builder = request_builder.body(body.to_vec());
+
+    let response = request_builder
+        .send()
+        .await
+        .map_err(|e| AppError::Proxy(format!("请求发送失败: {}", e)))?;
+
+    let status = response.status();
+    let headers = response.headers().clone();
+
+    if status != 200 {
+        let error_body = response.text().await.unwrap_or_default();
+        error!("端点 {} 返回错误状态 {}: {}", endpoint.config.name, status, error_body);
+        return Err(AppError::Proxy(format!("上游返回状态 {}: {}", status, error_body)));
+    }
+
+    let response_body = response.bytes().await.map_err(|e| AppError::Proxy(format!("读取响应失败: {}", e)))?;
+
+    // 解析token使用量
+    let tokens_used = parse_token_usage(&response_body, &endpoint.config.api_type);
+    if tokens_used > 0 {
+        state.update_endpoint_tokens(&endpoint.config.id, tokens_used);
+        debug!("端点 {} 消耗 {} tokens", endpoint.config.name, tokens_used);
+    }
+
+    let mut response_builder = HttpResponse::build(
+        actix_web::http::StatusCode::from_u16(status.as_u16())
+            .unwrap_or(actix_web::http::StatusCode::OK),
+    );
+
+    for (key, value) in &headers {
+        if let Ok(v) = value.to_str() {
+            response_builder.insert_header((key.as_str(), v));
+        }
+    }
+
+    Ok(response_builder.body(response_body))
+}
+
+/// 解析响应中的token使用量
+fn parse_token_usage(body: &[u8], api_type: &ApiType) -> u64 {
+    let body_str = match std::str::from_utf8(body) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+
+    let json: serde_json::Value = match serde_json::from_str(body_str) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+
+    match api_type {
+        ApiType::OpenAI | ApiType::OpenAIResponses => {
+            json.get("usage")
+                .and_then(|u| u.get("total_tokens"))
+                .and_then(|t| t.as_u64())
+                .unwrap_or(0)
+        }
+        ApiType::Anthropic => {
+            let input = json.get("usage")
+                .and_then(|u| u.get("input_tokens"))
+                .and_then(|t| t.as_u64())
+                .unwrap_or(0);
+            let output = json.get("usage")
+                .and_then(|u| u.get("output_tokens"))
+                .and_then(|t| t.as_u64())
+                .unwrap_or(0);
+            input + output
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_openai_token_usage() {
+        let body = r#"{"usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}}"#;
+        let tokens = parse_token_usage(body.as_bytes(), &ApiType::OpenAI);
+        assert_eq!(tokens, 30);
+    }
+
+    #[test]
+    fn test_parse_anthropic_token_usage() {
+        let body = r#"{"usage": {"input_tokens": 15, "output_tokens": 25}}"#;
+        let tokens = parse_token_usage(body.as_bytes(), &ApiType::Anthropic);
+        assert_eq!(tokens, 40);
+    }
+
+    #[test]
+    fn test_parse_empty_usage() {
+        let body = r#"{"id": "chatcmpl-123"}"#;
+        let tokens = parse_token_usage(body.as_bytes(), &ApiType::OpenAI);
+        assert_eq!(tokens, 0);
+    }
+
+    #[test]
+    fn test_parse_invalid_json() {
+        let body = "not json";
+        let tokens = parse_token_usage(body.as_bytes(), &ApiType::OpenAI);
+        assert_eq!(tokens, 0);
+    }
+}

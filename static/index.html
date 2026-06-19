@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Token Pool</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app">
+        <!-- 登录页面 -->
+        <div id="login-page" class="page">
+            <div class="login-container">
+                <div class="login-card">
+                    <div class="login-hero">
+                        <div class="hero-text">
+                            <span class="hero-char" style="--i:0">别</span>
+                            <span class="hero-char" style="--i:1">拿</span>
+                            <span class="hero-char" style="--i:2">T</span>
+                            <span class="hero-char" style="--i:3">o</span>
+                            <span class="hero-char" style="--i:4">k</span>
+                            <span class="hero-char" style="--i:5">e</span>
+                            <span class="hero-char" style="--i:6">n</span>
+                            <span class="hero-char" style="--i:7">不</span>
+                            <span class="hero-char" style="--i:8">当</span>
+                            <span class="hero-char" style="--i:9">干</span>
+                            <span class="hero-char" style="--i:10">粮</span>
+                        </div>
+                    </div>
+                    <h1>Token Pool</h1>
+                    <p class="subtitle">LLM API Token 池管理</p>
+                    <form id="login-form">
+                        <div class="form-group">
+                            <input type="password" id="login-password" placeholder="输入管理密码" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary" style="width:100%">登录</button>
+                    </form>
+                    <div id="login-error" class="error"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 主界面 -->
+        <div id="main-page" class="page" style="display:none">
+            <header>
+                <div class="header-left">
+                    <h1>Token Pool</h1>
+                    <span class="badge">v1.0</span>
+                </div>
+                <div class="header-right">
+                    <button id="btn-logout" class="btn btn-small btn-danger">登出</button>
+                </div>
+            </header>
+
+            <nav>
+                <button class="nav-btn active" data-tab="dashboard">概览</button>
+                <button class="nav-btn" data-tab="endpoints">端点</button>
+                <button class="nav-btn" data-tab="apis">API接口</button>
+                <button class="nav-btn" data-tab="settings">设置</button>
+            </nav>
+
+            <!-- 仪表盘 -->
+            <div id="tab-dashboard" class="tab-content active">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>端点总数</h3>
+                        <div class="stat-value" id="stat-total">0</div>
+                        <div class="stat-sub" id="stat-active-sub">活跃: 0</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>已用 Token</h3>
+                        <div class="stat-value" id="stat-used">0</div>
+                        <div class="stat-sub" id="stat-limit-sub">限额: 0</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Token 使用率</h3>
+                        <div class="stat-value" id="stat-usage-rate">0%</div>
+                        <div class="progress-bar" style="height: 4px; margin-top: 8px;">
+                            <div class="progress-fill" id="stat-usage-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>总请求数</h3>
+                        <div class="stat-value" id="stat-requests">0</div>
+                        <div class="stat-sub" id="stat-errors-sub">错误: 0</div>
+                    </div>
+                </div>
+
+                <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr);">
+                    <div class="stat-card">
+                        <h3>端点池</h3>
+                        <div class="stat-value" id="stat-pools">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>API 接口</h3>
+                        <div class="stat-value" id="stat-apis">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>总错误数</h3>
+                        <div class="stat-value" id="stat-total-errors">0</div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h2>端点池概览</h2>
+                    <div id="pools-overview"></div>
+                </div>
+
+                <div class="section">
+                    <h2>API 接口</h2>
+                    <div id="apis-overview"></div>
+                </div>
+
+                <div class="section">
+                    <h2>端点状态</h2>
+                    <div id="endpoints-overview"></div>
+                </div>
+            </div>
+
+            <!-- 端点管理 -->
+            <div id="tab-endpoints" class="tab-content">
+                <div class="section">
+                    <div class="section-header">
+                        <h2>端点池</h2>
+                        <button id="btn-add-pool" class="btn btn-primary btn-small">+ 添加池</button>
+                    </div>
+                    <p style="font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: 16px;">
+                        先创建端点池，再在池中添加代理端点。每个池可配置独立的调度算法。
+                    </p>
+                    <div id="pools-list"></div>
+                </div>
+            </div>
+
+            <!-- API接口管理 -->
+            <div id="tab-apis" class="tab-content">
+                <div class="section">
+                    <div class="section-header">
+                        <h2>API 接口</h2>
+                        <button id="btn-add-api" class="btn btn-primary btn-small">+ 添加接口</button>
+                    </div>
+                    <p style="font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: 16px;">
+                        配置对外暴露的 API 接口，每个接口可关联到一个端点池，支持自定义前缀和独立认证。
+                    </p>
+                    <div id="apis-list"></div>
+                </div>
+            </div>
+
+            <!-- 系统设置 -->
+            <div id="tab-settings" class="tab-content">
+                <div class="section">
+                    <h2>系统设置</h2>
+                    <p style="font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: 16px;">
+                        接口类型、调度算法、API认证密钥等配置请在「端点」和「API接口」菜单中分别设置。
+                    </p>
+                    <div style="display: flex; gap: 12px;">
+                        <button id="btn-change-password-settings" class="btn">修改密码</button>
+                        <button id="btn-reset-all" class="btn btn-danger">重置所有端点 Token</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 端点模态框 -->
+        <div id="endpoint-modal" class="modal" style="display:none">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="modal-title">添加端点</h2>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <form id="endpoint-form">
+                    <input type="hidden" id="ep-id">
+                    <input type="hidden" id="ep-pool-id" value="">
+                    <div class="form-group">
+                        <label>名称</label>
+                        <input type="text" id="ep-name" placeholder="My GPT-4" required>
+                    </div>
+                    <div class="form-group">
+                        <label>端点 URL</label>
+                        <input type="text" id="ep-url" placeholder="https://api.openai.com" required>
+                    </div>
+                    <div class="form-group">
+                        <label>接口类型</label>
+                        <select id="ep-type">
+                            <option value="openai">OpenAI</option>
+                            <option value="anthropic">Anthropic</option>
+                            <option value="openai-responses">OpenAI Responses</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>API Key</label>
+                        <input type="text" id="ep-apikey" placeholder="sk-..." required>
+                    </div>
+                    <div class="form-group">
+                        <label>Token 限额</label>
+                        <input type="number" id="ep-limit" placeholder="100000">
+                        <small>置空则为 Token 无上限</small>
+                    </div>
+                    <div class="form-group">
+                        <label>超时时间（秒）</label>
+                        <input type="number" id="ep-timeout" placeholder="300" value="300">
+                        <small>请求超时时间，默认 300 秒</small>
+                    </div>
+                    <div class="form-group">
+                        <label>限额重置</label>
+                        <select id="ep-reset">
+                            <option value="manual">手动重置</option>
+                            <option value="daily">每日自动重置</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="ep-enabled" checked>
+                            启用此端点
+                        </label>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn" id="btn-check-endpoint">验证连接</button>
+                        <button type="button" class="btn modal-close">取消</button>
+                        <button type="submit" class="btn btn-primary">保存</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- 密码模态框 -->
+        <div id="password-modal" class="modal" style="display:none">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>修改密码</h2>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <form id="password-form">
+                    <div class="form-group">
+                        <label>原密码</label>
+                        <input type="password" id="old-password" required>
+                    </div>
+                    <div class="form-group">
+                        <label>新密码</label>
+                        <input type="password" id="new-password" required minlength="6">
+                    </div>
+                    <div class="form-group">
+                        <label>确认新密码</label>
+                        <input type="password" id="confirm-password" required>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn modal-close">取消</button>
+                        <button type="submit" class="btn btn-primary">修改</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- 对外API模态框 -->
+        <div id="api-modal" class="modal" style="display:none">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="api-modal-title">添加对外接口</h2>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <form id="api-form">
+                    <input type="hidden" id="api-id">
+                    <div class="form-group">
+                        <label>接口名称</label>
+                        <input type="text" id="api-name" placeholder="GPT-4 API" required>
+                    </div>
+                    <div class="form-group">
+                        <label>URL 前缀</label>
+                        <input type="text" id="api-prefix" placeholder="/v1/gpt4" required>
+                        <small>客户端请求时使用的路径前缀，如 /v1、/api/gpt4</small>
+                    </div>
+                    <div class="form-group">
+                        <label>接口类型</label>
+                        <select id="api-type">
+                            <option value="openai">OpenAI 兼容</option>
+                            <option value="anthropic">Anthropic 兼容</option>
+                            <option value="openai-responses">OpenAI Responses</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>关联端点池</label>
+                        <select id="api-pool" required>
+                            <option value="">请选择池</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>API 认证密钥</label>
+                        <input type="text" id="api-key" placeholder="留空则不需要认证">
+                        <small>调用此接口时需要提供的认证密钥</small>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="api-enabled" checked>
+                            启用此接口
+                        </label>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn modal-close">取消</button>
+                        <button type="submit" class="btn btn-primary">保存</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- 端点池模态框 -->
+        <div id="pool-modal" class="modal" style="display:none">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="pool-modal-title">添加端点池</h2>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <form id="pool-form">
+                    <input type="hidden" id="pool-id">
+                    <div class="form-group">
+                        <label>池名称</label>
+                        <input type="text" id="pool-name" placeholder="我的端点池" required>
+                    </div>
+                    <div class="form-group">
+                        <label>描述</label>
+                        <input type="text" id="pool-desc" placeholder="池的用途说明">
+                    </div>
+                    <div class="form-group">
+                        <label>调度算法</label>
+                        <select id="pool-algorithm">
+                            <option value="round_robin">轮询 (Round Robin)</option>
+                            <option value="failover">轮换 (Failover)</option>
+                            <option value="random">随机 (Random)</option>
+                        </select>
+                        <div class="algo-description" id="pool-algo-desc" style="margin-top: 8px; padding: 12px; background: var(--bg-primary); border-radius: var(--radius-sm); font-size: 0.75rem; color: var(--text-secondary); line-height: 1.6;">
+                            <div class="algo-item" data-algo="round_robin">
+                                <strong style="color: var(--accent);">轮询</strong> - 依次分配请求到每个端点，跳过已耗尽的端点。
+                            </div>
+                            <div class="algo-item" data-algo="failover" style="display: none;">
+                                <strong style="color: var(--warning);">轮换</strong> - 优先使用当前端点，耗尽后切换到下一个。
+                            </div>
+                            <div class="algo-item" data-algo="random" style="display: none;">
+                                <strong style="color: var(--success);">随机</strong> - 随机选择端点，失败时自动重试其他端点。
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn modal-close">取消</button>
+                        <button type="submit" class="btn btn-primary">保存</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div id="toast" class="toast" style="display:none"></div>
+
+        <footer class="app-footer">
+            Design by Artenx
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

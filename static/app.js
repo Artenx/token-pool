@@ -1,0 +1,993 @@
+// API 基础路径
+const API_BASE = '/admin/api';
+
+// 状态
+let currentEndpoints = [];
+let currentConfig = {};
+let currentPools = [];
+let currentApis = [];
+
+// 初始化
+document.addEventListener('DOMContentLoaded', () => {
+    checkAuth();
+    initEventListeners();
+});
+
+// 检查登录状态
+async function checkAuth() {
+    try {
+        const res = await fetch(`${API_BASE}/auth/status`);
+        const data = await res.json();
+        if (data.authenticated) {
+            showMainPage();
+            loadDashboard();
+        } else {
+            showLoginPage();
+        }
+    } catch (e) {
+        showLoginPage();
+    }
+}
+
+// 初始化事件监听
+function initEventListeners() {
+    // 登录表单
+    document.getElementById('login-form').addEventListener('submit', handleLogin);
+
+    // 导航切换
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+        btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    });
+
+    // 登出
+    document.getElementById('btn-logout').addEventListener('click', handleLogout);
+
+    // 密码表单
+    document.getElementById('password-form').addEventListener('submit', handleChangePassword);
+
+    // 端点表单
+    document.getElementById('endpoint-form').addEventListener('submit', handleSaveEndpoint);
+
+    // 验证端点连接
+    document.getElementById('btn-check-endpoint').addEventListener('click', handleCheckEndpoint);
+
+    // 设置页面的修改密码按钮
+    const btnChangePwdSettings = document.getElementById('btn-change-password-settings');
+    if (btnChangePwdSettings) {
+        btnChangePwdSettings.addEventListener('click', () => {
+            showModal('password-modal');
+        });
+    }
+
+    // 重置所有
+    document.getElementById('btn-reset-all').addEventListener('click', handleResetAll);
+
+    // 添加对外API
+    document.getElementById('btn-add-api').addEventListener('click', () => {
+        document.getElementById('api-modal-title').textContent = '添加对外接口';
+        document.getElementById('api-form').reset();
+        document.getElementById('api-id').value = '';
+        document.getElementById('api-enabled').checked = true;
+        loadPoolOptions('api-pool');
+        showModal('api-modal');
+    });
+
+    // 对外API表单
+    document.getElementById('api-form').addEventListener('submit', handleSaveApi);
+
+    // 添加池
+    document.getElementById('btn-add-pool').addEventListener('click', () => {
+        document.getElementById('pool-modal-title').textContent = '添加端点池';
+        document.getElementById('pool-form').reset();
+        document.getElementById('pool-id').value = '';
+        showModal('pool-modal');
+    });
+
+    // 池表单
+    document.getElementById('pool-form').addEventListener('submit', handleSavePool);
+
+    // 池调度算法切换说明
+    const poolAlgoSelect = document.getElementById('pool-algorithm');
+    if (poolAlgoSelect) {
+        poolAlgoSelect.addEventListener('change', () => updatePoolAlgoDescription());
+    }
+
+    // 模态框关闭
+    document.querySelectorAll('.modal-close').forEach(btn => {
+        btn.addEventListener('click', () => {
+            btn.closest('.modal').style.display = 'none';
+        });
+    });
+
+    // 点击模态框外部关闭
+    document.querySelectorAll('.modal').forEach(modal => {
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+    });
+}
+
+// 登录处理
+async function handleLogin(e) {
+    e.preventDefault();
+    const password = document.getElementById('login-password').value;
+    try {
+        const res = await fetch(`${API_BASE}/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password })
+        });
+        if (res.ok) {
+            showMainPage();
+            loadDashboard();
+        } else {
+            const data = await res.json();
+            showError('login-error', data.error?.message || '登录失败');
+        }
+    } catch (e) {
+        showError('login-error', '网络错误');
+    }
+}
+
+// 登出处理
+async function handleLogout() {
+    await fetch(`${API_BASE}/logout`, { method: 'POST' });
+    showLoginPage();
+}
+
+// 修改密码
+async function handleChangePassword(e) {
+    e.preventDefault();
+    const oldPassword = document.getElementById('old-password').value;
+    const newPassword = document.getElementById('new-password').value;
+    const confirmPassword = document.getElementById('confirm-password').value;
+
+    if (newPassword !== confirmPassword) {
+        showToast('两次输入的密码不一致', 'error');
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API_BASE}/password`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                old_password: oldPassword,
+                new_password: newPassword
+            })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showToast('密码修改成功', 'success');
+            hideModal('password-modal');
+            document.getElementById('password-form').reset();
+        } else {
+            showToast(data.error?.message || '修改失败', 'error');
+        }
+    } catch (e) {
+        showToast('网络错误', 'error');
+    }
+}
+
+// 加载仪表盘
+async function loadDashboard() {
+    try {
+        const statsRes = await fetch(`${API_BASE}/stats`);
+        const stats = await statsRes.json();
+
+        currentEndpoints = stats.endpoints || [];
+        currentPools = stats.pools || [];
+        currentApis = stats.exposed_apis || [];
+
+        // 计统计数据
+        const totalErrors = currentEndpoints.reduce((sum, ep) => sum + ep.error_count, 0);
+        const usageRate = stats.total_tokens_limit > 0 
+            ? ((stats.total_tokens_used / stats.total_tokens_limit) * 100).toFixed(1)
+            : 0;
+        const usageBar = stats.total_tokens_limit > 0 
+            ? Math.min((stats.total_tokens_used / stats.total_tokens_limit) * 100, 100)
+            : 0;
+        const usageClass = usageRate >= 100 ? 'full' : usageRate >= 80 ? 'high' : '';
+
+        // 更新统计卡片
+        document.getElementById('stat-total').textContent = stats.total_endpoints;
+        document.getElementById('stat-active-sub').textContent = `活跃: ${stats.active_endpoints}`;
+        document.getElementById('stat-used').textContent = formatNumber(stats.total_tokens_used);
+        document.getElementById('stat-limit-sub').textContent = `限额: ${formatNumber(stats.total_tokens_limit)}`;
+        document.getElementById('stat-usage-rate').textContent = `${usageRate}%`;
+        document.getElementById('stat-usage-bar').style.width = `${usageBar}%`;
+        document.getElementById('stat-usage-bar').className = `progress-fill ${usageClass}`;
+        document.getElementById('stat-requests').textContent = formatNumber(stats.total_requests);
+        document.getElementById('stat-errors-sub').textContent = `错误: ${totalErrors}`;
+        document.getElementById('stat-pools').textContent = stats.total_pools;
+        document.getElementById('stat-apis').textContent = stats.total_exposed_apis;
+        document.getElementById('stat-total-errors').textContent = totalErrors;
+
+        // 更新各概览区域
+        renderPoolsOverview();
+        renderApisOverview();
+        renderEndpointsOverview();
+
+        // 更新端点列表（用于端点页面）
+        renderEndpointsList();
+        
+        // 更新池列表（用于端点页面）
+        renderPoolsList();
+    } catch (e) {
+        console.error('加载仪表盘失败:', e);
+    }
+}
+
+// 渲染端点池概览
+function renderPoolsOverview() {
+    const container = document.getElementById('pools-overview');
+    if (!container) return;
+    
+    if (currentPools.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-tertiary); font-size: 0.875rem;">暂无端点池</p>';
+        return;
+    }
+
+    const algoNames = {
+        'round_robin': '轮询',
+        'failover': '轮换',
+        'random': '随机'
+    };
+
+    container.innerHTML = currentPools.map(pool => `
+        <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: var(--bg-tertiary); border-radius: var(--radius-sm); margin-bottom: 8px;">
+            <div>
+                <span style="font-weight: 500;">${escapeHtml(pool.name)}</span>
+                <span style="font-size: 0.75rem; color: var(--text-tertiary); margin-left: 8px;">${algoNames[pool.schedule_algorithm] || pool.schedule_algorithm}</span>
+            </div>
+            <div style="display: flex; gap: 16px; font-size: 0.8125rem; color: var(--text-secondary);">
+                <span>端点: ${pool.endpoint_count}</span>
+                <span>活跃: ${pool.active_endpoint_count}</span>
+                <span>Token: ${formatNumber(pool.total_tokens_used)}</span>
+                <span>请求: ${formatNumber(pool.total_requests)}</span>
+            </div>
+        </div>
+    `).join('');
+}
+
+// 渲染API接口概览
+function renderApisOverview() {
+    const container = document.getElementById('apis-overview');
+    if (!container) return;
+    
+    if (currentApis.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-tertiary); font-size: 0.875rem;">暂无API接口</p>';
+        return;
+    }
+
+    container.innerHTML = currentApis.map(api => {
+        const statusClass = api.enabled ? 'active' : 'disabled';
+        const statusText = api.enabled ? '启用' : '禁用';
+        
+        return `
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: var(--bg-tertiary); border-radius: var(--radius-sm); margin-bottom: 8px;">
+                <div>
+                    <span style="font-weight: 500;">${escapeHtml(api.name)}</span>
+                    <span style="font-size: 0.8125rem; color: var(--accent); margin-left: 8px; font-family: var(--font-mono);">${escapeHtml(api.prefix)}</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 12px; font-size: 0.8125rem;">
+                    <span style="color: var(--text-secondary);">${api.api_type.toUpperCase()}</span>
+                    <span style="color: var(--text-secondary);">池: ${api.pool_name || '-'}</span>
+                    <span style="color: var(--text-secondary);">端点: ${api.endpoint_count}</span>
+                    <span class="status-badge ${statusClass}" style="font-size: 0.6875rem;">${statusText}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// 渲染端点概览
+function renderEndpointsOverview() {
+    const container = document.getElementById('endpoints-overview');
+    if (currentEndpoints.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-secondary);">暂无端点，请在"端点管理"中添加</p>';
+        return;
+    }
+
+    container.innerHTML = currentEndpoints.map(ep => {
+        const percentage = ep.token_limit > 0 ? (ep.tokens_used / ep.token_limit * 100) : 0;
+        const progressClass = percentage >= 100 ? 'full' : percentage >= 80 ? 'high' : '';
+        const statusClass = !ep.enabled ? 'disabled' : ep.tokens_remaining === 0 ? 'exhausted' : 'active';
+        const statusText = !ep.enabled ? '已禁用' : ep.tokens_remaining === 0 ? '已耗尽' : '正常';
+
+        return `
+            <div class="endpoint-card">
+                <div class="endpoint-header">
+                    <span class="endpoint-name">${escapeHtml(ep.name)}</span>
+                    <span class="status-badge ${statusClass}">${statusText}</span>
+                </div>
+                <div class="endpoint-details">
+                    <div class="endpoint-detail">
+                        <label>类型</label>
+                        <span>${ep.api_type.toUpperCase()}</span>
+                    </div>
+                    <div class="endpoint-detail">
+                        <label>已用/限额</label>
+                        <span>${formatNumber(ep.tokens_used)} / ${formatNumber(ep.token_limit)}</span>
+                    </div>
+                    <div class="endpoint-detail">
+                        <label>请求数</label>
+                        <span>${formatNumber(ep.total_requests)}</span>
+                    </div>
+                    <div class="endpoint-detail">
+                        <label>错误数</label>
+                        <span>${ep.error_count}</span>
+                    </div>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill ${progressClass}" style="width: ${Math.min(percentage, 100)}%"></div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// 渲染端点列表
+function renderEndpointsList() {
+    const container = document.getElementById('endpoints-list');
+    if (currentEndpoints.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-secondary);">暂无端点，点击"添加端点"开始</p>';
+        return;
+    }
+
+    container.innerHTML = currentEndpoints.map(ep => {
+        const percentage = ep.token_limit > 0 ? (ep.tokens_used / ep.token_limit * 100) : 0;
+        const progressClass = percentage >= 100 ? 'full' : percentage >= 80 ? 'high' : '';
+        const statusClass = !ep.enabled ? 'disabled' : ep.tokens_remaining === 0 ? 'exhausted' : 'active';
+        const statusText = !ep.enabled ? '已禁用' : ep.tokens_remaining === 0 ? '已耗尽' : '正常';
+
+        return `
+            <div class="endpoint-card">
+                <div class="endpoint-header">
+                    <span class="endpoint-name">${escapeHtml(ep.name)}</span>
+                    <div class="endpoint-status">
+                        <span class="status-badge ${statusClass}">${statusText}</span>
+                    </div>
+                </div>
+                <div class="endpoint-details">
+                    <div class="endpoint-detail">
+                        <label>URL</label>
+                        <span title="${escapeHtml(ep.url)}">${truncate(ep.url, 30)}</span>
+                    </div>
+                    <div class="endpoint-detail">
+                        <label>类型</label>
+                        <span>${ep.api_type.toUpperCase()}</span>
+                    </div>
+                    <div class="endpoint-detail">
+                        <label>已用/限额</label>
+                        <span>${formatNumber(ep.tokens_used)} / ${formatNumber(ep.token_limit)}</span>
+                    </div>
+                    <div class="endpoint-detail">
+                        <label>剩余</label>
+                        <span>${formatNumber(ep.tokens_remaining)}</span>
+                    </div>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill ${progressClass}" style="width: ${Math.min(percentage, 100)}%"></div>
+                </div>
+                <div class="endpoint-actions">
+                    <button class="btn btn-small btn-outline" onclick="editEndpoint('${ep.id}')">编辑</button>
+                    <button class="btn btn-small ${ep.enabled ? 'btn-warning' : 'btn-success'}" onclick="toggleEndpoint('${ep.id}')">
+                        ${ep.enabled ? '禁用' : '启用'}
+                    </button>
+                    <button class="btn btn-small btn-outline" onclick="resetEndpoint('${ep.id}')">重置Token</button>
+                    <button class="btn btn-small btn-danger" onclick="deleteEndpoint('${ep.id}')">删除</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// 添加端点到指定池
+function addEndpointToPool(poolId) {
+    document.getElementById('modal-title').textContent = '添加端点';
+    document.getElementById('endpoint-form').reset();
+    document.getElementById('ep-id').value = '';
+    document.getElementById('ep-enabled').checked = true;
+    
+    // 设置池ID（如果有隐藏字段）
+    const poolField = document.getElementById('ep-pool-id');
+    if (poolField) {
+        poolField.value = poolId;
+    }
+    
+    showModal('endpoint-modal');
+}
+
+// 编辑端点
+async function editEndpoint(id) {
+    const ep = currentEndpoints.find(e => e.id === id);
+    if (!ep) return;
+
+    document.getElementById('modal-title').textContent = '编辑端点';
+    document.getElementById('ep-id').value = ep.id;
+    document.getElementById('ep-name').value = ep.name;
+    document.getElementById('ep-url').value = ep.url;
+    document.getElementById('ep-type').value = ep.api_type;
+    document.getElementById('ep-apikey').value = ''; // 不显示key
+    document.getElementById('ep-limit').value = ep.token_limit || '';
+    document.getElementById('ep-timeout').value = ep.timeout || 300;
+    document.getElementById('ep-reset').value = ep.reset_policy || 'manual';
+    document.getElementById('ep-enabled').checked = ep.enabled;
+
+    showModal('endpoint-modal');
+}
+
+// 验证端点连接
+async function handleCheckEndpoint() {
+    const btn = document.getElementById('btn-check-endpoint');
+    const originalText = btn.textContent;
+    btn.textContent = '验证中...';
+    btn.disabled = true;
+
+    const data = {
+        name: document.getElementById('ep-name').value || 'test',
+        url: document.getElementById('ep-url').value,
+        api_type: document.getElementById('ep-type').value,
+        api_key: document.getElementById('ep-apikey').value,
+        token_limit: 1000,
+        reset_policy: 'manual',
+        enabled: true
+    };
+
+    if (!data.url) {
+        showToast('请先填写端点URL', 'error');
+        btn.textContent = originalText;
+        btn.disabled = false;
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API_BASE}/endpoints/check`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        const result = await res.json();
+        if (result.success) {
+            showToast(result.message, 'success');
+        } else {
+            showToast(result.message, 'error');
+        }
+    } catch (e) {
+        showToast('验证请求失败: ' + e.message, 'error');
+    }
+
+    btn.textContent = originalText;
+    btn.disabled = false;
+}
+
+// 保存端点
+async function handleSaveEndpoint(e) {
+    e.preventDefault();
+    const id = document.getElementById('ep-id').value;
+    const poolId = document.getElementById('ep-pool-id').value;
+    const data = {
+        name: document.getElementById('ep-name').value,
+        url: document.getElementById('ep-url').value,
+        api_type: document.getElementById('ep-type').value,
+        api_key: document.getElementById('ep-apikey').value,
+        token_limit: parseInt(document.getElementById('ep-limit').value) || 0,
+        timeout: parseInt(document.getElementById('ep-timeout').value) || 300,
+        reset_policy: document.getElementById('ep-reset').value,
+        enabled: document.getElementById('ep-enabled').checked,
+        pool_id: poolId || null
+    };
+
+    // 编辑时如果api_key为空，使用原来的值
+    if (id && !data.api_key) {
+        const ep = currentEndpoints.find(e => e.id === id);
+        if (ep) {
+            // 需要从后端获取完整信息
+            try {
+                const res = await fetch(`${API_BASE}/endpoints/${id}`);
+                if (res.ok) {
+                    const fullEp = await res.json();
+                    data.api_key = fullEp.config.api_key;
+                }
+            } catch (e) {
+                // 忽略
+            }
+        }
+    }
+
+    try {
+        const url = id ? `${API_BASE}/endpoints/${id}` : `${API_BASE}/endpoints`;
+        const method = id ? 'PUT' : 'POST';
+
+        const res = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+            showToast(id ? '端点已更新' : '端点已添加', 'success');
+            hideModal('endpoint-modal');
+            loadDashboard();
+        } else {
+            const err = await res.json();
+            showToast(err.error?.message || '操作失败', 'error');
+        }
+    } catch (e) {
+        showToast('网络错误', 'error');
+    }
+}
+
+// 切换端点状态
+async function toggleEndpoint(id) {
+    try {
+        const res = await fetch(`${API_BASE}/endpoints/${id}/toggle`, { method: 'POST' });
+        if (res.ok) {
+            showToast('端点状态已切换', 'success');
+            loadDashboard();
+        }
+    } catch (e) {
+        showToast('操作失败', 'error');
+    }
+}
+
+// 重置端点Token
+async function resetEndpoint(id) {
+    if (!confirm('确定要重置此端点的Token使用量吗？')) return;
+    try {
+        const res = await fetch(`${API_BASE}/endpoints/${id}/reset`, { method: 'POST' });
+        if (res.ok) {
+            showToast('Token已重置', 'success');
+            loadDashboard();
+        }
+    } catch (e) {
+        showToast('操作失败', 'error');
+    }
+}
+
+// 删除端点
+async function deleteEndpoint(id) {
+    if (!confirm('确定要删除此端点吗？此操作不可恢复。')) return;
+    try {
+        const res = await fetch(`${API_BASE}/endpoints/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+            showToast('端点已删除', 'success');
+            loadDashboard();
+        }
+    } catch (e) {
+        showToast('操作失败', 'error');
+    }
+}
+
+// 重置所有
+async function handleResetAll() {
+    if (!confirm('确定要重置所有端点的Token使用量吗？')) return;
+    try {
+        const res = await fetch(`${API_BASE}/endpoints/reset-all`, { method: 'POST' });
+        if (res.ok) {
+            showToast('所有Token已重置', 'success');
+            loadDashboard();
+        }
+    } catch (e) {
+        showToast('操作失败', 'error');
+    }
+}
+
+// 切换标签页
+function switchTab(tab) {
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.toggle('active', content.id === `tab-${tab}`);
+    });
+    if (tab === 'dashboard' || tab === 'endpoints') {
+        loadDashboard();
+    } else if (tab === 'apis') {
+        loadApisPage();
+    }
+}
+
+// 显示/隐藏页面
+function showLoginPage() {
+    document.getElementById('login-page').style.display = 'block';
+    document.getElementById('main-page').style.display = 'none';
+}
+
+function showMainPage() {
+    document.getElementById('login-page').style.display = 'none';
+    document.getElementById('main-page').style.display = 'block';
+}
+
+// 模态框
+function showModal(id) {
+    document.getElementById(id).style.display = 'flex';
+}
+
+function hideModal(id) {
+    document.getElementById(id).style.display = 'none';
+}
+
+// ========== 对外API和池管理 ==========
+
+// 加载对外接口页面
+async function loadApisPage() {
+    try {
+        const [statsRes] = await Promise.all([
+            fetch(`${API_BASE}/stats`)
+        ]);
+        const stats = await statsRes.json();
+        
+        currentPools = stats.pools || [];
+        currentApis = stats.exposed_apis || [];
+        
+        renderApisList();
+        renderPoolsList();
+    } catch (e) {
+        console.error('加载对外接口页面失败:', e);
+    }
+}
+
+// 渲染对外API列表
+function renderApisList() {
+    const container = document.getElementById('apis-list');
+    if (currentApis.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-tertiary); font-size: 0.875rem;">暂无对外接口，点击"添加接口"开始配置</p>';
+        return;
+    }
+
+    container.innerHTML = currentApis.map(api => {
+        const statusClass = api.enabled ? 'active' : 'disabled';
+        const statusText = api.enabled ? '已启用' : '已禁用';
+        
+        return `
+            <div class="endpoint-card">
+                <div class="endpoint-header">
+                    <span class="endpoint-name">${escapeHtml(api.name)}</span>
+                    <div class="endpoint-status">
+                        <span class="status-badge ${statusClass}">${statusText}</span>
+                    </div>
+                </div>
+                <div class="endpoint-details">
+                    <div class="endpoint-detail">
+                        <label>前缀</label>
+                        <span style="color: var(--accent);">${escapeHtml(api.prefix)}</span>
+                    </div>
+                    <div class="endpoint-detail">
+                        <label>类型</label>
+                        <span>${api.api_type.toUpperCase()}</span>
+                    </div>
+                    <div class="endpoint-detail">
+                        <label>关联池</label>
+                        <span>${api.pool_name || '未关联'}</span>
+                    </div>
+                    <div class="endpoint-detail">
+                        <label>端点数</label>
+                        <span>${api.endpoint_count}</span>
+                    </div>
+                </div>
+                <div class="endpoint-actions">
+                    <button class="btn btn-small" onclick="editApi('${api.id}')">编辑</button>
+                    <button class="btn btn-small ${api.enabled ? 'btn-danger' : ''}" onclick="toggleApi('${api.id}')">
+                        ${api.enabled ? '禁用' : '启用'}
+                    </button>
+                    <button class="btn btn-small btn-danger" onclick="deleteApi('${api.id}')">删除</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// 渲染池列表（包含池内的端点）
+function renderPoolsList() {
+    const container = document.getElementById('pools-list');
+    if (currentPools.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-tertiary); font-size: 0.875rem;">暂无端点池，点击"添加池"开始配置</p>';
+        return;
+    }
+
+    const algoNames = {
+        'round_robin': '轮询',
+        'failover': '轮换',
+        'random': '随机'
+    };
+
+    container.innerHTML = currentPools.map(pool => {
+        // 获取该池下的端点
+        const poolEndpoints = currentEndpoints.filter(ep => ep.pool_id === pool.id);
+        
+        const endpointsHtml = poolEndpoints.length > 0 ? poolEndpoints.map(ep => {
+            const statusClass = !ep.enabled ? 'disabled' : ep.tokens_remaining === 0 ? 'exhausted' : 'active';
+            const statusText = !ep.enabled ? '已禁用' : ep.tokens_remaining === 0 ? '已耗尽' : '正常';
+            const percentage = ep.token_limit > 0 ? (ep.tokens_used / ep.token_limit * 100) : 0;
+            const progressClass = percentage >= 100 ? 'full' : percentage >= 80 ? 'high' : '';
+
+            return `
+                <div style="padding: 12px; background: var(--bg-primary); border-radius: var(--radius-sm); margin-top: 8px; border-left: 3px solid var(--accent);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <span style="font-weight: 500; font-size: 0.875rem;">${escapeHtml(ep.name)}</span>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span class="status-badge ${statusClass}" style="font-size: 0.625rem;">${statusText}</span>
+                        </div>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 8px;">
+                        <span>URL: ${truncate(ep.url, 25)}</span>
+                        <span>类型: ${ep.api_type.toUpperCase()}</span>
+                        <span>已用: ${formatNumber(ep.tokens_used)} / ${formatNumber(ep.token_limit)}</span>
+                        <span>请求: ${ep.total_requests}</span>
+                    </div>
+                    <div class="progress-bar" style="height: 3px; margin-bottom: 8px;">
+                        <div class="progress-fill ${progressClass}" style="width: ${Math.min(percentage, 100)}%"></div>
+                    </div>
+                    <div style="display: flex; gap: 6px;">
+                        <button class="btn btn-small" onclick="editEndpoint('${ep.id}')" style="font-size: 0.6875rem;">编辑</button>
+                        <button class="btn btn-small ${ep.enabled ? 'btn-danger' : ''}" onclick="toggleEndpoint('${ep.id}')" style="font-size: 0.6875rem;">
+                            ${ep.enabled ? '禁用' : '启用'}
+                        </button>
+                        <button class="btn btn-small" onclick="resetEndpoint('${ep.id}')" style="font-size: 0.6875rem;">重置</button>
+                        <button class="btn btn-small btn-danger" onclick="deleteEndpoint('${ep.id}')" style="font-size: 0.6875rem;">删除</button>
+                    </div>
+                </div>
+            `;
+        }).join('') : '<p style="font-size: 0.75rem; color: var(--text-tertiary); margin-top: 8px; padding: 8px;">暂无端点，点击下方按钮添加</p>';
+
+        return `
+            <div class="endpoint-card" style="margin-bottom: 16px;">
+                <div class="endpoint-header">
+                    <span class="endpoint-name">${escapeHtml(pool.name)}</span>
+                    <span class="status-badge active">${algoNames[pool.schedule_algorithm] || pool.schedule_algorithm}</span>
+                </div>
+                <div class="endpoint-details">
+                    <div class="endpoint-detail">
+                        <label>描述</label>
+                        <span>${escapeHtml(pool.description || '无')}</span>
+                    </div>
+                    <div class="endpoint-detail">
+                        <label>端点数</label>
+                        <span>${pool.endpoint_count}</span>
+                    </div>
+                    <div class="endpoint-detail">
+                        <label>活跃</label>
+                        <span>${pool.active_endpoint_count}</span>
+                    </div>
+                    <div class="endpoint-detail">
+                        <label>已用Token</label>
+                        <span>${formatNumber(pool.total_tokens_used)}</span>
+                    </div>
+                    <div class="endpoint-detail">
+                        <label>请求数</label>
+                        <span>${formatNumber(pool.total_requests)}</span>
+                    </div>
+                </div>
+                
+                <!-- 池内端点列表 -->
+                <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <span style="font-size: 0.8125rem; font-weight: 500; color: var(--text-secondary);">池内端点</span>
+                        <button class="btn btn-small btn-primary" onclick="addEndpointToPool('${pool.id}')" style="font-size: 0.6875rem;">+ 添加端点</button>
+                    </div>
+                    ${endpointsHtml}
+                </div>
+                
+                <div class="endpoint-actions" style="margin-top: 12px;">
+                    <button class="btn btn-small" onclick="editPool('${pool.id}')">编辑池</button>
+                    <button class="btn btn-small btn-danger" onclick="deletePool('${pool.id}')">删除池</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// 加载池选项到下拉框
+async function loadPoolOptions(selectId) {
+    try {
+        const res = await fetch(`${API_BASE}/stats`);
+        const stats = await res.json();
+        currentPools = stats.pools || [];
+        
+        const select = document.getElementById(selectId);
+        select.innerHTML = '<option value="">请选择池</option>' + 
+            currentPools.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+    } catch (e) {
+        console.error('加载池选项失败:', e);
+    }
+}
+
+// 编辑对外API
+async function editApi(id) {
+    const api = currentApis.find(a => a.id === id);
+    if (!api) return;
+    
+    document.getElementById('api-modal-title').textContent = '编辑对外接口';
+    document.getElementById('api-id').value = api.id;
+    document.getElementById('api-name').value = api.name;
+    document.getElementById('api-prefix').value = api.prefix;
+    document.getElementById('api-type').value = api.api_type;
+    document.getElementById('api-enabled').checked = api.enabled;
+    
+    await loadPoolOptions('api-pool');
+    document.getElementById('api-pool').value = api.pool_id;
+    
+    showModal('api-modal');
+}
+
+// 保存对外API
+async function handleSaveApi(e) {
+    e.preventDefault();
+    const id = document.getElementById('api-id').value;
+    const data = {
+        name: document.getElementById('api-name').value,
+        prefix: document.getElementById('api-prefix').value,
+        api_type: document.getElementById('api-type').value,
+        pool_id: document.getElementById('api-pool').value,
+        api_key: document.getElementById('api-key').value || null,
+        enabled: document.getElementById('api-enabled').checked
+    };
+
+    try {
+        const url = id ? `${API_BASE}/exposed-apis/${id}` : `${API_BASE}/exposed-apis`;
+        const method = id ? 'PUT' : 'POST';
+        
+        const res = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+            showToast(id ? '接口已更新' : '接口已添加', 'success');
+            hideModal('api-modal');
+            loadApisPage();
+        } else {
+            const err = await res.json();
+            showToast(err.error?.message || '操作失败', 'error');
+        }
+    } catch (e) {
+        showToast('网络错误', 'error');
+    }
+}
+
+// 切换对外API状态
+async function toggleApi(id) {
+    try {
+        const res = await fetch(`${API_BASE}/exposed-apis/${id}/toggle`, { method: 'POST' });
+        if (res.ok) {
+            showToast('接口状态已切换', 'success');
+            loadApisPage();
+        }
+    } catch (e) {
+        showToast('操作失败', 'error');
+    }
+}
+
+// 删除对外API
+async function deleteApi(id) {
+    if (!confirm('确定要删除此对外接口吗？')) return;
+    try {
+        const res = await fetch(`${API_BASE}/exposed-apis/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+            showToast('接口已删除', 'success');
+            loadApisPage();
+        }
+    } catch (e) {
+        showToast('操作失败', 'error');
+    }
+}
+
+// 编辑池
+async function editPool(id) {
+    const pool = currentPools.find(p => p.id === id);
+    if (!pool) return;
+    
+    document.getElementById('pool-modal-title').textContent = '编辑端点池';
+    document.getElementById('pool-id').value = pool.id;
+    document.getElementById('pool-name').value = pool.name;
+    document.getElementById('pool-desc').value = pool.description || '';
+    document.getElementById('pool-algorithm').value = pool.schedule_algorithm;
+    
+    updatePoolAlgoDescription();
+    showModal('pool-modal');
+}
+
+// 保存池
+async function handleSavePool(e) {
+    e.preventDefault();
+    const id = document.getElementById('pool-id').value;
+    const data = {
+        name: document.getElementById('pool-name').value,
+        description: document.getElementById('pool-desc').value || null,
+        schedule_algorithm: document.getElementById('pool-algorithm').value
+    };
+
+    try {
+        const url = id ? `${API_BASE}/pools/${id}` : `${API_BASE}/pools`;
+        const method = id ? 'PUT' : 'POST';
+        
+        const res = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+            showToast(id ? '池已更新' : '池已添加', 'success');
+            hideModal('pool-modal');
+            loadApisPage();
+        } else {
+            const err = await res.json();
+            showToast(err.error?.message || '操作失败', 'error');
+        }
+    } catch (e) {
+        showToast('网络错误', 'error');
+    }
+}
+
+// 删除池
+async function deletePool(id) {
+    if (!confirm('确定要删除此池吗？关联的端点和对外接口将被解除关联。')) return;
+    try {
+        const res = await fetch(`${API_BASE}/pools/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+            showToast('池已删除', 'success');
+            loadApisPage();
+        }
+    } catch (e) {
+        showToast('操作失败', 'error');
+    }
+}
+
+// 更新池模态框中的算法说明
+function updatePoolAlgoDescription() {
+    const select = document.getElementById('pool-algorithm');
+    if (!select) return;
+    
+    const selectedAlgo = select.value;
+    const container = document.getElementById('pool-algo-desc');
+    if (!container) return;
+    
+    const items = container.querySelectorAll('.algo-item');
+    items.forEach(item => {
+        item.style.display = item.dataset.algo === selectedAlgo ? 'block' : 'none';
+    });
+}
+
+// 消息提示
+function showToast(message, type = 'success') {
+    const toast = document.getElementById('toast');
+    toast.textContent = message;
+    toast.className = `toast ${type}`;
+    toast.style.display = 'block';
+    setTimeout(() => {
+        toast.style.display = 'none';
+    }, 3000);
+}
+
+// 错误提示
+function showError(id, message) {
+    const el = document.getElementById(id);
+    el.textContent = message;
+    el.style.display = 'block';
+    setTimeout(() => {
+        el.style.display = 'none';
+    }, 5000);
+}
+
+// 工具函数
+function formatNumber(num) {
+    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+    return num.toString();
+}
+
+function truncate(str, len) {
+    return str.length > len ? str.substring(0, len) + '...' : str;
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
