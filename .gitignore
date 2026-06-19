@@ -4,3 +4,9 @@
 *~
 .DS_Store
 config.toml
+
+# SSL 证书
+*.pem
+*.key
+*.crt
+certs/
