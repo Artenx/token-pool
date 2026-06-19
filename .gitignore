@@ -10,3 +10,6 @@ config.toml
 *.key
 *.crt
 certs/
+
+# Docker 数据目录
+data/

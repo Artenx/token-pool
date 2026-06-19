@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  token-pool:
+    build: .
+    container_name: token-pool
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - RUST_LOG=info
+      - CONFIG_PATH=/app/data/config.toml
+    restart: unless-stopped

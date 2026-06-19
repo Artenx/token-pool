@@ -14,20 +14,22 @@
 
 ## 快速部署
 
-### 1. 环境要求
+### 方式一：直接编译部署
+
+#### 1. 环境要求
 
 - Linux 操作系统
 - Rust 编译环境（1.75+）
 - Nginx（可选，用于 HTTPS）
 
-### 2. 编译
+#### 2. 编译
 
 ```bash
 cd token-pool
 cargo build --release
 ```
 
-### 3. 部署
+#### 3. 部署
 
 ```bash
 # 创建部署目录
@@ -44,11 +46,63 @@ systemctl enable token-pool
 systemctl start token-pool
 ```
 
-### 4. 验证
+#### 4. 验证
 
 ```bash
 # 检查服务状态
 systemctl status token-pool
+
+# 健康检查
+curl http://localhost:8080/health
+```
+
+---
+
+### 方式二：Docker 部署
+
+#### 1. 环境要求
+
+- Docker
+- Docker Compose（可选）
+
+#### 2. 使用 Docker Compose（推荐）
+
+```bash
+cd token-pool
+
+# 创建数据目录
+mkdir -p data
+
+# 构建并启动
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+
+# 停止服务
+docker-compose down
+```
+
+#### 3. 使用 Docker 命令
+
+```bash
+# 构建镜像
+docker build -t token-pool .
+
+# 运行容器
+docker run -d \
+  --name token-pool \
+  -p 8080:8080 \
+  -v $(pwd)/data:/app/data \
+  --restart unless-stopped \
+  token-pool
+```
+
+#### 4. 验证
+
+```bash
+# 检查容器状态
+docker ps | grep token-pool
 
 # 健康检查
 curl http://localhost:8080/health
