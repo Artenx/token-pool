@@ -32,11 +32,11 @@ async function checkAuth() {
 // ========== 模型映射管理 ==========
 
 // 更新模型映射区域的显示/隐藏
-function updateModelMappingsVisibility() {
+function updateModelMappingsVisibility(fromPool = false) {
     const poolId = document.getElementById('ep-pool-id').value;
     const mappingsGroup = document.getElementById('model-mappings-group');
     
-    if (!poolId || !mappingsGroup) {
+    if (!poolId || !mappingsGroup || !fromPool) {
         if (mappingsGroup) mappingsGroup.style.display = 'none';
         return;
     }
@@ -675,7 +675,7 @@ function addEndpointToPool(poolId) {
 }
 
 // 编辑端点
-async function editEndpoint(id) {
+async function editEndpoint(id, fromPool = false) {
     const ep = currentEndpoints.find(e => e.id === id);
     if (!ep) return;
 
@@ -749,7 +749,7 @@ async function editEndpoint(id) {
 
     // 设置池ID并更新模型映射显示
     document.getElementById('ep-pool-id').value = ep.pool_id || '';
-    updateModelMappingsVisibility();
+    updateModelMappingsVisibility(fromPool);
 
     showModal('endpoint-modal');
 }
@@ -1833,7 +1833,7 @@ function renderPoolsList() {
                         <div class="progress-fill ${progressClass}" style="width: ${Math.min(percentage, 100)}%"></div>
                     </div>
                     <div style="display: flex; gap: 6px;">
-                        <button class="btn btn-small" onclick="editEndpoint('${escapeAttr(ep.id)}')" style="font-size: 0.6875rem;">编辑</button>
+                        <button class="btn btn-small" onclick="editEndpoint('${escapeAttr(ep.id)}', true)" style="font-size: 0.6875rem;">编辑</button>
                         <button class="btn btn-small btn-warning" onclick="removeEndpointFromPool('${escapeAttr(ep.id)}')" style="font-size: 0.6875rem;">从池中移除</button>
                     </div>
                 </div>
