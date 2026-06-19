@@ -662,13 +662,19 @@ async function editEndpoint(id) {
     // 更新完整路径显示
     updateEndpointFullUrl();
     
-    // 触发限额变化事件，控制重置方式
+    // 设置重置方式（无限制时强制为每日重置）
+    const isUnlimited = ep.token_limit >= 999999999000 || ep.token_limit === 0;
+    if (isUnlimited) {
+        document.getElementById('ep-reset').value = 'daily';
+    } else {
+        document.getElementById('ep-reset').value = ep.reset_policy || 'manual';
+    }
+    
+    // 触发限额变化事件，控制重置方式的禁用状态
     const epLimitInput = document.getElementById('ep-limit');
     if (epLimitInput) {
         epLimitInput.dispatchEvent(new Event('input'));
     }
-    // 设置重置方式（在触发 input 事件后，因为 input 事件可能会改变它）
-    document.getElementById('ep-reset').value = ep.reset_policy || 'manual';
 
     // 获取完整端点信息以显示 API Key 和模型映射
     try {
