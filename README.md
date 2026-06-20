@@ -143,4 +143,4 @@ MIT License - 详见 [LICENSE](./LICENSE)
 
 ## 致谢
 
-本项目创世版本由小米 MiMo-v2.5-pro 生成。
+本项目创世版本由小米 MiMo-v2.5-Pro 生成。
