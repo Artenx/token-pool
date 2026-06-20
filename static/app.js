@@ -2263,8 +2263,9 @@ async function confirmApiModelAndTest() {
             return;
         }
         
-        // 获取端点完整信息
-        const endpoint = poolEndpoints[0];
+        // 随机选择一个端点获取完整信息
+        const randomIndex = Math.floor(Math.random() * poolEndpoints.length);
+        const endpoint = poolEndpoints[randomIndex];
         const epRes = await fetch(`${API_BASE}/endpoints/${endpoint.id}`);
         if (!epRes.ok) {
             throw new Error('获取端点信息失败');
