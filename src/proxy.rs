@@ -14,11 +14,6 @@ async fn map_model_name(
     pool: &Pool,
     state: &AppState,
 ) -> bytes::Bytes {
-    // 如果是透传模式，直接返回原请求体
-    if pool.model_mode == ModelMode::Passthrough {
-        return body.clone();
-    }
-    
     // 解析请求体
     let Ok(mut json) = serde_json::from_slice::<Value>(body) else {
         return body.clone();
