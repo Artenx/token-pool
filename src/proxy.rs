@@ -113,16 +113,36 @@ fn detect_response_error(body: &[u8]) -> Option<(String, String)> {
         return check_json_error(&json);
     }
 
-    // SSE 格式：逐行检查 data: 事件（流式响应）
-    if body_str.contains("data: ") {
+    // SSE 格式：逐行检查
+    if body_str.contains("data: ") || body_str.contains("event:") {
+        let mut is_error_event = false;
         for line in body_str.lines() {
             let line = line.trim();
+            // Anthropic 格式: event: error
+            if line == "event: error" {
+                is_error_event = true;
+                continue;
+            }
             if let Some(json_str) = line.strip_prefix("data: ") {
                 if let Ok(json) = serde_json::from_str::<Value>(json_str) {
+                    // 如果前面有 event: error，直接解析这个 data 行
+                    if is_error_event {
+                        let msg = json.get("error")
+                            .and_then(|e| e.get("message"))
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("未知错误")
+                            .to_string();
+                        let code = json.get("error")
+                            .and_then(|e| e.get("type"))
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| "error".to_string());
+                        return Some((code, msg));
+                    }
                     if let Some(err) = check_json_error(&json) {
                         return Some(err);
                     }
                 }
+                is_error_event = false;
             }
         }
     }
