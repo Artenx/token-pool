@@ -306,8 +306,14 @@ fn build_target_url(base_url: &str, path: &str, api_type: &ApiType) -> String {
     let base = base_url.trim_end_matches('/');
     let path = path.trim_start_matches('/');
     
-    // 如果路径已经包含 /v1 前缀，则直接拼接 base 和 path
-    if path.starts_with("v1/") || path.starts_with("v1") {
+    // 如果 base_url 已经包含 /v1 前缀，且 path 也以 v1/ 开头，则去掉 path 中的 v1/
+    if (base.ends_with("/v1") || base.ends_with("/v1/")) && (path.starts_with("v1/") || path == "v1") {
+        let stripped = path.strip_prefix("v1/").or_else(|| path.strip_prefix("v1")).unwrap_or("");
+        return format!("{}/{}", base, stripped);
+    }
+    
+    // 如果 path 已经包含 v1/ 前缀，直接拼接
+    if path.starts_with("v1/") || path == "v1" {
         return format!("{}/{}", base, path);
     }
     
