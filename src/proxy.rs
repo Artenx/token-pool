@@ -7,11 +7,64 @@ use futures_util::StreamExt;
 use serde_json::Value;
 use tracing::{debug, error, warn};
 
+/// 已知的错误关键词（用于检测纯文本错误内容）
+const ERROR_KEYWORDS: &[&str] = &[
+    "请求负载过高",
+    "请稍后再试",
+    "rate limit",
+    "too many requests",
+    "quota exceeded",
+    "insufficient_quota",
+    "overloaded",
+    "capacity exceeded",
+];
+
+/// 检查内容文本是否包含已知错误关键词
+fn check_content_error(content: &str) -> Option<(String, String)> {
+    let content_lower = content.to_lowercase();
+    for keyword in ERROR_KEYWORDS {
+        if content_lower.contains(&keyword.to_lowercase()) {
+            return Some(("CONTENT_ERROR".to_string(), content.to_string()));
+        }
+    }
+    None
+}
+
 /// 检查单个 JSON 对象是否为错误响应（兼容三种接口类型）
 /// 返回 Some((error_code, error_message)) 如果是错误
 fn check_json_error(json: &Value) -> Option<(String, String)> {
     // 跳过正常响应（有 choices 或 id 字段）
     if json.get("choices").is_some() || json.get("id").is_some() {
+        // 但检查 choices 中的 content 是否包含错误信息（上游可能把错误包装成模型输出）
+        if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
+            for choice in choices {
+                let content = choice
+                    .get("delta").and_then(|d| d.get("content")).and_then(|c| c.as_str())
+                    .or_else(|| choice.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_str()));
+                if let Some(content) = content {
+                    // 1. 检查内容中是否嵌入了 JSON 错误对象
+                    if let Some(json_start) = content.find('{') {
+                        let json_part = &content[json_start..];
+                        if let Ok(err_json) = serde_json::from_str::<Value>(json_part) {
+                            if err_json.get("error").is_some() {
+                                let msg = err_json["error"].get("message")
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or("未知错误")
+                                    .to_string();
+                                let code = err_json["error"].get("code")
+                                    .map(|c| c.to_string())
+                                    .unwrap_or_default();
+                                return Some((code, msg));
+                            }
+                        }
+                    }
+                    // 2. 检查内容是否包含已知错误关键词（纯文本错误）
+                    if let Some(err) = check_content_error(content) {
+                        return Some(err);
+                    }
+                }
+            }
+        }
         return None;
     }
 
@@ -30,6 +83,15 @@ fn check_json_error(json: &Value) -> Option<(String, String)> {
         if code.is_number() || code.is_string() {
             let code_str = code.to_string();
             let msg_str = msg.as_str().unwrap_or("未知错误").to_string();
+            return Some((code_str, msg_str));
+        }
+    }
+
+    // 4. NVIDIA 格式: {"status": 429, "title": "Too Many Requests"}
+    if let (Some(status), Some(title)) = (json.get("status"), json.get("title")) {
+        if status.is_number() {
+            let code_str = status.to_string();
+            let msg_str = title.as_str().unwrap_or("未知错误").to_string();
             return Some((code_str, msg_str));
         }
     }
@@ -142,8 +204,7 @@ pub async fn forward_request(
             Scheduler::select_endpoint(state, &pool.id, &algorithm)
                 .ok_or_else(|| AppError::Proxy("池中没有可用的代理端点".to_string()))?
         } else {
-            let last_id = tried_ids.last().unwrap();
-            Scheduler::select_next_for_retry(state, &pool.id, last_id)
+            Scheduler::select_next_for_retry(state, &pool.id, &tried_ids)
                 .ok_or_else(|| AppError::Proxy("所有代理端点均不可用".to_string()))?
         };
 
@@ -220,8 +281,7 @@ pub async fn forward_stream_request(
             Scheduler::select_endpoint(state.get_ref(), &pool.id, &algorithm)
                 .ok_or_else(|| AppError::Proxy("池中没有可用的代理端点".to_string()))?
         } else {
-            let last_id = tried_ids.last().unwrap();
-            Scheduler::select_next_for_retry(state.get_ref(), &pool.id, last_id)
+            Scheduler::select_next_for_retry(state.get_ref(), &pool.id, &tried_ids)
                 .ok_or_else(|| AppError::Proxy("所有代理端点均不可用".to_string()))?
         };
 
@@ -313,14 +373,25 @@ pub async fn forward_stream_request(
             continue;
         }
 
-        // 先读取完整响应体，检查是否有错误（流式响应中错误可能在 body 中而非状态码）
-        let resp_headers = response.headers().clone();
-        let response_body = match response.bytes().await {
-            Ok(b) => b,
-            Err(e) => {
-                warn!("端点 {} 读取响应失败: {}", endpoint.config.name, e);
+        // 流式响应：只读取第一个 chunk 检查错误，后续 chunk 直接转发
+        let mut stream = response.bytes_stream();
+
+        // 读取第一个 chunk
+        let first_chunk = match stream.next().await {
+            Some(Ok(chunk)) => chunk,
+            Some(Err(e)) => {
+                warn!("端点 {} 读取响应流失败: {}", endpoint.config.name, e);
                 state.increment_endpoint_errors(&endpoint_id);
-                last_error = Some(AppError::Proxy(format!("读取响应失败: {}", e)));
+                last_error = Some(AppError::Proxy(format!("读取响应流失败: {}", e)));
+                if algorithm != ScheduleAlgorithm::Random {
+                    break;
+                }
+                continue;
+            }
+            None => {
+                warn!("端点 {} 返回空响应", endpoint.config.name);
+                state.increment_endpoint_errors(&endpoint_id);
+                last_error = Some(AppError::Proxy("上游返回空响应".to_string()));
                 if algorithm != ScheduleAlgorithm::Random {
                     break;
                 }
@@ -328,8 +399,8 @@ pub async fn forward_stream_request(
             }
         };
 
-        // 检查响应体中是否包含错误（LLM API 可能返回 200 但 body 中有错误）
-        if let Some((error_code, error_msg)) = detect_response_error(&response_body) {
+        // 检查第一个 chunk 中是否包含错误
+        if let Some((error_code, error_msg)) = detect_response_error(&first_chunk) {
             warn!("端点 {} 响应中包含错误 [{}]: {}", endpoint.config.name, error_code, error_msg);
             state.increment_endpoint_errors(&endpoint_id);
             last_error = Some(AppError::Proxy(format!("上游错误 [{}]: {}", error_code, error_msg)));
@@ -339,65 +410,47 @@ pub async fn forward_stream_request(
             continue;
         }
 
-        // 解析token使用量
-        let tokens_used = parse_token_usage(&response_body, &endpoint.config.api_type);
-        if tokens_used > 0 {
-            state.update_endpoint_tokens(&endpoint.config.id, tokens_used);
-        }
+        // 无错误，将第一个 chunk 和剩余 stream 合并后转发给客户端
+        let ep_id = endpoint.config.id.clone();
+        let ep_api_type = endpoint.config.api_type.clone();
+        let state_clone = state.clone();
 
-        // 检查客户端是否要求流式响应
-        let body_str = std::str::from_utf8(&body).unwrap_or("");
-        let is_stream = body_str.contains("\"stream\":true") || body_str.contains("\"stream\": true");
+        let first_stream = futures_util::stream::once(async move { Ok::<_, reqwest::Error>(first_chunk) });
+        let full_stream = first_stream.chain(stream);
 
-        if is_stream {
-            // 流式转发
-            let ep_id = endpoint.config.id.clone();
-            let ep_api_type = endpoint.config.api_type.clone();
-            let state_clone = state.clone();
-
-            let body_stream = actix_web::HttpResponse::Ok()
-                .content_type("text/event-stream")
-                .insert_header(("Cache-Control", "no-cache"))
-                .insert_header(("Connection", "keep-alive"))
-                .streaming({
-                    let mut buffer = String::new();
-                    let chunks = vec![Ok::<_, std::io::Error>(response_body)];
-                    futures_util::stream::iter(chunks).map(move |chunk| {
-                        if let Ok(data) = &chunk {
-                            if let Ok(text) = std::str::from_utf8(data) {
-                                buffer.push_str(text);
-                                while let Some(line_end) = buffer.find('\n') {
-                                    let line = buffer[..line_end].trim().to_string();
-                                    buffer = buffer[line_end + 1..].to_string();
-                                    if line.starts_with("data: ") && !line.contains("[DONE]") {
-                                        let json_str = &line[6..];
-                                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                            if json.get("usage").is_some() {
-                                                let tokens = parse_token_usage(json_str.as_bytes(), &ep_api_type);
-                                                if tokens > 0 {
-                                                    state_clone.update_endpoint_tokens(&ep_id, tokens);
-                                                }
+        let body_stream = actix_web::HttpResponse::Ok()
+            .content_type("text/event-stream")
+            .insert_header(("Cache-Control", "no-cache"))
+            .insert_header(("Connection", "keep-alive"))
+            .streaming({
+                let mut buffer = String::new();
+                full_stream.map(move |chunk| {
+                    let chunk = chunk.map_err(std::io::Error::other);
+                    if let Ok(data) = &chunk {
+                        if let Ok(text) = std::str::from_utf8(data) {
+                            buffer.push_str(text);
+                            while let Some(line_end) = buffer.find('\n') {
+                                let line = buffer[..line_end].trim().to_string();
+                                buffer = buffer[line_end + 1..].to_string();
+                                if line.starts_with("data: ") && !line.contains("[DONE]") {
+                                    let json_str = &line[6..];
+                                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                        if json.get("usage").is_some() {
+                                            let tokens = parse_token_usage(json_str.as_bytes(), &ep_api_type);
+                                            if tokens > 0 {
+                                                state_clone.update_endpoint_tokens(&ep_id, tokens);
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-                        chunk
-                    })
-                });
+                    }
+                    chunk
+                })
+            });
 
-            return Ok(body_stream);
-        } else {
-            // 非流式响应
-            let mut response_builder = HttpResponse::build(actix_web::http::StatusCode::OK);
-            for (key, value) in &resp_headers {
-                if let Ok(v) = value.to_str() {
-                    response_builder.insert_header((key.as_str(), v));
-                }
-            }
-            return Ok(response_builder.body(response_body));
-        }
+        return Ok(body_stream);
     }
 
     // 所有重试都失败

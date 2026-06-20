@@ -110,12 +110,12 @@ impl Scheduler {
     pub fn select_next_for_retry(
         state: &AppState,
         pool_id: &str,
-        failed_id: &str,
+        failed_ids: &[String],
     ) -> Option<String> {
         let available: Vec<String> = state
             .available_endpoint_ids_in_pool(pool_id)
             .into_iter()
-            .filter(|id| id != failed_id)
+            .filter(|id| !failed_ids.contains(id))
             .collect();
 
         if available.is_empty() {
@@ -126,7 +126,7 @@ impl Scheduler {
         let mut rng = rand::thread_rng();
         let idx = rng.gen_range(0..available.len());
         let selected = &available[idx];
-        debug!("重试选择端点: {} (排除失败的 {})", selected, failed_id);
+        debug!("重试选择端点: {} (排除失败的 {:?})", selected, failed_ids);
         Some(selected.clone())
     }
 }
