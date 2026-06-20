@@ -537,12 +537,29 @@ impl AppState {
     /// 执行每日重置检查
     pub async fn check_daily_reset(&self) {
         let mut endpoints = self.endpoints.write();
+        let now = Utc::now();
+        
         for ep in endpoints.values_mut() {
-            // 无限制端点：已使用达到上限时自动清零
+            // 无限制端点：已使用达到上限时自动清零（循环清零）
             if ep.config.token_limit >= 999999999000 && ep.tokens_used >= 999999999000 {
                 ep.tokens_used = 0;
+                ep.last_reset = now;
                 info!("端点 {} 已使用达到上限，自动清零", ep.config.name);
+                continue;
             }
+            
+            // 每日重置模式：每天零点自动清零
+            if ep.config.reset_policy == ResetPolicy::Daily && ep.config.token_limit > 0 {
+                let last_reset_date = ep.last_reset.date_naive();
+                let today = now.date_naive();
+                if last_reset_date < today {
+                    ep.tokens_used = 0;
+                    ep.last_reset = now;
+                    info!("端点 {} 每日自动重置", ep.config.name);
+                }
+            }
+            
+            // 手动重置模式：不做任何操作，已使用达到限额时 is_available() 自动返回 false
         }
     }
 
