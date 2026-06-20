@@ -19,8 +19,12 @@ const ERROR_KEYWORDS: &[&str] = &[
     "capacity exceeded",
 ];
 
-/// 检查内容文本是否包含已知错误关键词
+/// 检查内容文本是否包含已知错误关键词（仅对短内容检测，避免影响正常回复）
 fn check_content_error(content: &str) -> Option<(String, String)> {
+    // 错误信息通常很短（<200字符），正常回复的 content 通常较长
+    if content.len() > 200 {
+        return None;
+    }
     let content_lower = content.to_lowercase();
     for keyword in ERROR_KEYWORDS {
         if content_lower.contains(&keyword.to_lowercase()) {
