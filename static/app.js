@@ -2187,7 +2187,7 @@ async function handleTestApi() {
             }
         } else {
             if (modelsList) {
-                modelsList.innerHTML = `<p style="color: var(--danger); padding: 16px; text-align: center;">获取模型列表失败: ${escapeHtml(modelsResult.message || '未知错误')}</p>`;
+                modelsList.innerHTML = `<p style="color: var(--danger); padding: 16px; text-align: center;">获取模型列表失败</p>`;
             }
         }
     } catch (e) {
