@@ -195,10 +195,23 @@ pub async fn forward_stream_request(
 
     request_builder = request_builder.body(mapped_body.to_vec());
 
-    let response = request_builder
-        .send()
-        .await
-        .map_err(|e| AppError::Proxy(format!("请求发送失败: {}", e)))?;
+    // 发送请求，捕获网络异常（超时、连接拒绝、DNS失败等）
+    let response = match request_builder.send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            let error_msg = if e.is_timeout() {
+                format!("连接超时: {}", e)
+            } else if e.is_connect() {
+                format!("连接失败: {}", e)
+            } else if e.is_request() {
+                format!("请求错误: {}", e)
+            } else {
+                format!("网络异常: {}", e)
+            };
+            error!("端点 {} 请求异常: {}", endpoint.config.name, error_msg);
+            return Err(AppError::Proxy(error_msg));
+        }
+    };
 
     let resp_status = response.status();
     if resp_status != 200 {
@@ -322,10 +335,23 @@ async fn forward_to_endpoint(
 
     request_builder = request_builder.body(body.to_vec());
 
-    let response = request_builder
-        .send()
-        .await
-        .map_err(|e| AppError::Proxy(format!("请求发送失败: {}", e)))?;
+    // 发送请求，捕获网络异常（超时、连接拒绝、DNS失败等）
+    let response = match request_builder.send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            let error_msg = if e.is_timeout() {
+                format!("连接超时: {}", e)
+            } else if e.is_connect() {
+                format!("连接失败: {}", e)
+            } else if e.is_request() {
+                format!("请求错误: {}", e)
+            } else {
+                format!("网络异常: {}", e)
+            };
+            error!("端点 {} 请求异常: {}", endpoint.config.name, error_msg);
+            return Err(AppError::Proxy(error_msg));
+        }
+    };
 
     let status = response.status();
     let headers = response.headers().clone();
