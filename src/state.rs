@@ -697,9 +697,14 @@ impl AppState {
         endpoint: &EndpointState,
         client_model: &str,
     ) -> String {
-        // 映射模式：使用手动配置的映射关系
+        // 映射模式：使用手动配置的映射关系（模糊匹配，不区分大小写）
         if pool.model_mode == ModelMode::Mapping {
-            if let Some(mapping) = endpoint.config.model_mappings.iter().find(|m| m.client_model == client_model) {
+            let client_lower = client_model.to_lowercase();
+            if let Some(mapping) = endpoint.config.model_mappings.iter().find(|m| {
+                m.client_model.to_lowercase() == client_lower || 
+                m.client_model.to_lowercase().contains(&client_lower) ||
+                client_lower.contains(&m.client_model.to_lowercase())
+            }) {
                 return mapping.endpoint_model.clone();
             }
             // 没有找到映射，返回原始名称
