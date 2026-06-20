@@ -145,29 +145,48 @@ pub async fn forward_stream_request(
 
     let algorithm = pool.schedule_algorithm.clone();
 
-    let endpoint_id = Scheduler::select_endpoint(state.get_ref(), &pool.id, &algorithm)
-        .ok_or_else(|| AppError::Proxy("池中没有可用的代理端点".to_string()))?;
+    // 计算最大重试次数
+    let available_count = state.available_endpoint_ids_in_pool(&pool.id).len();
+    let max_retries = match algorithm {
+        ScheduleAlgorithm::Random => available_count,
+        _ => 1,
+    };
 
-    let endpoint = state
-        .get_endpoint(&endpoint_id)
-        .ok_or_else(|| AppError::Proxy(format!("端点不存在: {}", endpoint_id)))?;
+    let mut last_error = None;
+    let mut tried_ids: Vec<String> = Vec::new();
 
-    // 计算实际路径
-    let actual_path = path.strip_prefix(&exposed_api.prefix).unwrap_or(path);
-    // build_target_url 会自动补全 /v1，这里不再重复添加
-    let target_path = actual_path.to_string();
-    let target_url = build_target_url(&endpoint.config.url, &target_path, &exposed_api.api_type);
-    
-    // 根据池的模型模式处理请求体
-    let mapped_body = map_model_name(&body, &endpoint, &pool, state.get_ref()).await;
+    for attempt in 0..max_retries {
+        let endpoint_id = if attempt == 0 {
+            Scheduler::select_endpoint(state.get_ref(), &pool.id, &algorithm)
+                .ok_or_else(|| AppError::Proxy("池中没有可用的代理端点".to_string()))?
+        } else {
+            let last_id = tried_ids.last().unwrap();
+            Scheduler::select_next_for_retry(state.get_ref(), &pool.id, last_id)
+                .ok_or_else(|| AppError::Proxy("所有代理端点均不可用".to_string()))?
+        };
 
-    debug!("流式转发到: {}", target_url);
+        tried_ids.push(endpoint_id.clone());
 
-    let mut request_builder = state.http_client.request(
-        reqwest::Method::from_bytes(req.method().as_str().as_bytes())
-            .map_err(|e| AppError::Proxy(format!("无效的HTTP方法: {}", e)))?,
-        &target_url,
-    );
+        let endpoint = state
+            .get_endpoint(&endpoint_id)
+            .ok_or_else(|| AppError::Proxy(format!("端点不存在: {}", endpoint_id)))?;
+
+        // 计算实际路径
+        let actual_path = path.strip_prefix(&exposed_api.prefix).unwrap_or(path);
+        // build_target_url 会自动补全 /v1，这里不再重复添加
+        let target_path = actual_path.to_string();
+        let target_url = build_target_url(&endpoint.config.url, &target_path, &exposed_api.api_type);
+        
+        // 根据池的模型模式处理请求体
+        let mapped_body = map_model_name(&body, &endpoint, &pool, state.get_ref()).await;
+
+        debug!("流式转发到: {} (尝试 {}/{})", target_url, attempt + 1, max_retries);
+
+        let mut request_builder = state.http_client.request(
+            reqwest::Method::from_bytes(req.method().as_str().as_bytes())
+                .map_err(|e| AppError::Proxy(format!("无效的HTTP方法: {}", e)))?,
+            &target_url,
+        );
 
     // 复制请求头（跳过认证头，后面会使用端点的 API Key）
     for (key, value) in req.headers() {
@@ -208,18 +227,31 @@ pub async fn forward_stream_request(
             } else {
                 format!("网络异常: {}", e)
             };
-            error!("端点 {} 请求异常: {}", endpoint.config.name, error_msg);
-            return Err(AppError::Proxy(error_msg));
+            warn!("端点 {} 请求异常: {}", endpoint.config.name, error_msg);
+            state.increment_endpoint_errors(&endpoint_id);
+            last_error = Some(AppError::Proxy(error_msg));
+
+            if algorithm != ScheduleAlgorithm::Random {
+                break;
+            }
+            continue;
         }
     };
 
     let resp_status = response.status();
     if resp_status != 200 {
         let error_body = response.text().await.unwrap_or_default();
-        return Err(AppError::Proxy(format!(
+        warn!("端点 {} 返回错误状态 {}: {}", endpoint.config.name, resp_status, error_body);
+        state.increment_endpoint_errors(&endpoint_id);
+        last_error = Some(AppError::Proxy(format!(
             "上游返回状态 {}: {}",
             resp_status, error_body
         )));
+
+        if algorithm != ScheduleAlgorithm::Random {
+            break;
+        }
+        continue;
     }
 
     // 流式转发 - 同时收集token使用量
@@ -261,7 +293,11 @@ pub async fn forward_stream_request(
             })
         });
 
-    Ok(body_stream)
+    return Ok(body_stream);
+    }
+
+    // 所有重试都失败
+    Err(last_error.unwrap_or_else(|| AppError::Proxy("转发请求失败".to_string())))
 }
 
 /// 转发请求到指定端点
