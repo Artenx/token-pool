@@ -137,4 +137,8 @@ curl http://your-ip:8080/your-prefix/chat/completions \
 
 ## License
 
-Crafted by Artenx
+MIT License - 详见 [LICENSE](./LICENSE)
+
+## 致谢
+
+本项目创世版本由小米 MiMo-v2.5-pro 开发
