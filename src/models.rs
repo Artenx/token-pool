@@ -29,8 +29,21 @@ pub enum ScheduleAlgorithm {
     RoundRobin,
     /// 轮换：用完一个再换下一个
     Failover,
-    /// 随机：随机选择，失败自动重试下一个
+    /// 随机：随机选择端点
     Random,
+}
+
+/// 重试模式
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RetryMode {
+    /// 无重试：异常直接返回
+    #[default]
+    None,
+    /// 原地重试：异常时继续向原端点重试
+    Same,
+    /// 端点重试：异常时切换到池内其他端点
+    Pool,
 }
 
 impl std::fmt::Display for ScheduleAlgorithm {
@@ -160,10 +173,20 @@ pub struct Pool {
     /// 模型参数传递模式
     #[serde(default)]
     pub model_mode: ModelMode,
+    /// 重试模式
+    #[serde(default)]
+    pub retry_mode: RetryMode,
+    /// 重试次数
+    #[serde(default = "default_retry_count")]
+    pub retry_count: u32,
     /// 关联的对外API ID
     pub exposed_api_id: Option<String>,
     /// 创建时间
     pub created_at: DateTime<Utc>,
+}
+
+fn default_retry_count() -> u32 {
+    1
 }
 
 /// 对外暴露的API接口
@@ -245,6 +268,10 @@ pub struct PoolRequest {
     pub schedule_algorithm: ScheduleAlgorithm,
     #[serde(default)]
     pub model_mode: ModelMode,
+    #[serde(default)]
+    pub retry_mode: RetryMode,
+    #[serde(default = "default_retry_count")]
+    pub retry_count: u32,
     pub exposed_api_id: Option<String>,
 }
 
@@ -307,6 +334,8 @@ pub struct PoolInfo {
     pub description: String,
     pub schedule_algorithm: ScheduleAlgorithm,
     pub model_mode: ModelMode,
+    pub retry_mode: RetryMode,
+    pub retry_count: u32,
     pub exposed_api_id: Option<String>,
     pub endpoint_count: usize,
     pub active_endpoint_count: usize,

@@ -343,6 +343,18 @@ function initEventListeners() {
     if (poolAlgoSelect) {
         poolAlgoSelect.addEventListener('change', () => updatePoolAlgoDescription());
     }
+    
+    // 模型模式切换说明
+    const poolModelModeSelect = document.getElementById('pool-model-mode');
+    if (poolModelModeSelect) {
+        poolModelModeSelect.addEventListener('change', () => updateModelModeDescription());
+    }
+    
+    // 重试模式切换说明
+    const poolRetryModeSelect = document.getElementById('pool-retry-mode');
+    if (poolRetryModeSelect) {
+        poolRetryModeSelect.addEventListener('change', () => updateRetryModeDescription());
+    }
 
     // 模态框关闭
     document.querySelectorAll('.modal-close').forEach(btn => {
@@ -486,6 +498,12 @@ function renderPoolsOverview() {
         'round_robin': '轮询',
         'failover': '轮换',
         'random': '随机'
+    };
+
+    const retryNames = {
+        'none': '无重试',
+        'same': '原地重试',
+        'pool': '端点重试'
     };
 
     container.innerHTML = currentPools.map(pool => `
@@ -1812,6 +1830,12 @@ function renderPoolsList() {
         'random': '随机'
     };
 
+    const retryNames = {
+        'none': '无重试',
+        'same': '原地重试',
+        'pool': '端点重试'
+    };
+
     container.innerHTML = currentPools.map(pool => {
         // 获取该池下的端点
         const poolEndpoints = currentEndpoints.filter(ep => (ep.pool_ids || []).includes(pool.id));
@@ -1852,6 +1876,7 @@ function renderPoolsList() {
                 <div class="endpoint-header">
                     <span class="endpoint-name">${escapeHtml(pool.name)}</span>
                     <span class="status-badge active">${algoNames[pool.schedule_algorithm] || pool.schedule_algorithm}</span>
+                    ${pool.retry_mode && pool.retry_mode !== 'none' ? `<span class="status-badge" style="background: rgba(255,152,0,0.1); color: #ff9800;">${retryNames[pool.retry_mode] || pool.retry_mode} ${pool.retry_count}次</span>` : ''}
                 </div>
                 <div class="endpoint-details">
                     <div class="endpoint-detail">
@@ -2458,9 +2483,17 @@ async function editPool(id) {
     document.getElementById('pool-desc').value = pool.description || '';
     document.getElementById('pool-algorithm').value = pool.schedule_algorithm;
     document.getElementById('pool-model-mode').value = pool.model_mode || 'passthrough';
+    document.getElementById('pool-retry-mode').value = pool.retry_mode || 'none';
+    document.getElementById('pool-retry-count').value = pool.retry_count || 1;
     
     // 更新算法说明
     updatePoolAlgoDescription();
+    
+    // 更新模型模式说明
+    updateModelModeDescription();
+    
+    // 更新重试模式说明和次数显示
+    updateRetryModeDescription();
     
     // 更新端点映射配置显示
     updatePoolEndpointsMapping(id, pool.model_mode);
@@ -2469,7 +2502,12 @@ async function editPool(id) {
     const modelModeSelect = document.getElementById('pool-model-mode');
     modelModeSelect.onchange = () => {
         updatePoolEndpointsMapping(id, modelModeSelect.value);
+        updateModelModeDescription();
     };
+    
+    // 监听重试模式变化
+    const retryModeSelect = document.getElementById('pool-retry-mode');
+    retryModeSelect.onchange = updateRetryModeDescription;
     
     showModal('pool-modal');
 }
@@ -2544,7 +2582,9 @@ async function handleSavePool(e) {
         name: document.getElementById('pool-name').value,
         description: document.getElementById('pool-desc').value || null,
         schedule_algorithm: document.getElementById('pool-algorithm').value,
-        model_mode: document.getElementById('pool-model-mode').value
+        model_mode: document.getElementById('pool-model-mode').value,
+        retry_mode: document.getElementById('pool-retry-mode').value,
+        retry_count: parseInt(document.getElementById('pool-retry-count').value) || 1
     };
 
     try {
@@ -2597,6 +2637,42 @@ function updatePoolAlgoDescription() {
     items.forEach(item => {
         item.style.display = item.dataset.algo === selectedAlgo ? 'block' : 'none';
     });
+}
+
+// 更新模型模式说明
+function updateModelModeDescription() {
+    const select = document.getElementById('pool-model-mode');
+    if (!select) return;
+    
+    const selectedMode = select.value;
+    const container = document.getElementById('model-mode-desc');
+    if (!container) return;
+    
+    const items = container.querySelectorAll('.model-mode-item');
+    items.forEach(item => {
+        item.style.display = item.dataset.mode === selectedMode ? 'block' : 'none';
+    });
+}
+
+// 更新重试模式说明
+function updateRetryModeDescription() {
+    const select = document.getElementById('pool-retry-mode');
+    if (!select) return;
+    
+    const selectedMode = select.value;
+    const container = document.getElementById('retry-mode-desc');
+    if (!container) return;
+    
+    const items = container.querySelectorAll('.retry-mode-item');
+    items.forEach(item => {
+        item.style.display = item.dataset.mode === selectedMode ? 'block' : 'none';
+    });
+    
+    // 更新重试次数输入框显示
+    const countGroup = document.getElementById('retry-count-group');
+    if (countGroup) {
+        countGroup.style.display = selectedMode === 'none' ? 'none' : 'block';
+    }
 }
 
 // 消息提示

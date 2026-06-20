@@ -402,7 +402,7 @@
                                 <strong style="color: var(--warning);">轮换</strong> - 优先使用当前端点，耗尽后切换到下一个。
                             </div>
                             <div class="algo-item" data-algo="random" style="display: none;">
-                                <strong style="color: var(--success);">随机</strong> - 随机选择端点，失败时自动重试其他端点。
+                                <strong style="color: var(--success);">随机</strong> - 随机选择一个端点，跳过限额已耗尽的端点。
                             </div>
                         </div>
                     </div>
@@ -412,8 +412,38 @@
                             <option value="passthrough">透传模式</option>
                             <option value="mapping">映射模式</option>
                         </select>
-                        <small>透传模式：模糊匹配端点支持的模型，不区分大小写，包含即匹配。</small>
-                        <small style="display: block; margin-top: 4px;">映射模式：需要在添加端点到池时手动配置模型名称映射关系。</small>
+                        <div id="model-mode-desc">
+                            <div class="model-mode-item" data-mode="passthrough">
+                                <small>模糊匹配端点支持的模型名称，不区分大小写，包含即匹配。</small>
+                            </div>
+                            <div class="model-mode-item" data-mode="mapping" style="display: none;">
+                                <small>需要在添加端点到池时手动配置模型名称映射关系。</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>重试机制</label>
+                        <select id="pool-retry-mode">
+                            <option value="none">无重试</option>
+                            <option value="same">原地重试</option>
+                            <option value="pool">端点重试</option>
+                        </select>
+                        <div id="retry-mode-desc">
+                            <div class="retry-mode-item" data-mode="none">
+                                <small>异常直接返回错误，不进行重试。</small>
+                            </div>
+                            <div class="retry-mode-item" data-mode="same" style="display: none;">
+                                <small>异常时继续向原端点发送请求，直到达到重试次数。</small>
+                            </div>
+                            <div class="retry-mode-item" data-mode="pool" style="display: none;">
+                                <small>异常时切换到池内其他端点，每个端点依次尝试。</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group" id="retry-count-group" style="display: none;">
+                        <label>重试次数</label>
+                        <input type="number" id="pool-retry-count" value="1" min="1" max="10">
+                        <small>每个端点的最大尝试次数。</small>
                     </div>
                     <div id="pool-endpoints-mapping" style="display: none; margin-top: 16px; padding: 12px; background: var(--bg-primary); border-radius: var(--radius-sm);"></div>
                     <div class="form-actions">

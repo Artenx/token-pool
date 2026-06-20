@@ -246,6 +246,8 @@ impl AppState {
             description: req.description.unwrap_or_default(),
             schedule_algorithm: req.schedule_algorithm,
             model_mode: req.model_mode,
+            retry_mode: req.retry_mode,
+            retry_count: req.retry_count,
             exposed_api_id: req.exposed_api_id,
             created_at: Utc::now(),
         };
@@ -274,6 +276,8 @@ impl AppState {
             }
             pool.schedule_algorithm = req.schedule_algorithm;
             pool.model_mode = req.model_mode;
+            pool.retry_mode = req.retry_mode;
+            pool.retry_count = req.retry_count;
             pool.exposed_api_id = req.exposed_api_id;
             config.clone()
         };
@@ -478,6 +482,8 @@ impl AppState {
                 description: pool.description.clone(),
                 schedule_algorithm: pool.schedule_algorithm.clone(),
                 model_mode: pool.model_mode.clone(),
+                retry_mode: pool.retry_mode.clone(),
+                retry_count: pool.retry_count,
                 exposed_api_id: pool.exposed_api_id.clone(),
                 endpoint_count: pool_endpoints.len(),
                 active_endpoint_count: active_in_pool,
@@ -680,7 +686,7 @@ impl AppState {
             _ => {
                 // 匹配到多个模型，返回错误信息
                 warn!("模型 '{}' 匹配到多个模型: {:?}", client_model, matches);
-                Some(format!("ERROR:模型名称参数有误，匹配到多个模型，请修改后重试"))
+                Some("ERROR:模型名称参数有误，匹配到多个模型，请修改后重试".to_string())
             }
         }
     }

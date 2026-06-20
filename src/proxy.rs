@@ -179,8 +179,7 @@ async fn map_model_name(
     // 如果模型名称发生变化，替换请求体
     if resolved_model != client_model {
         // 检查是否是错误信息
-        if resolved_model.starts_with("ERROR:") {
-            let error_msg = &resolved_model[6..];
+        if let Some(error_msg) = resolved_model.strip_prefix("ERROR:") {
             return Err(AppError::BadRequest(error_msg.to_string()));
         }
         if let Some(obj) = json.as_object_mut() {
@@ -212,27 +211,43 @@ pub async fn forward_request(
         .ok_or_else(|| AppError::Internal(format!("池不存在: {}", exposed_api.pool_id)))?;
 
     let algorithm = pool.schedule_algorithm.clone();
+    let retry_mode = pool.retry_mode.clone();
+    let retry_count = pool.retry_count.max(1) as usize;
 
     // 计算最大重试次数
-    let available_count = state.available_endpoint_ids_in_pool(&pool.id).len();
-    let max_retries = match algorithm {
-        ScheduleAlgorithm::Random => available_count,
-        _ => 1,
+    let available_count = state.available_endpoint_ids_in_pool(&pool.id).len().max(1);
+    let max_retries = match retry_mode {
+        RetryMode::None => 1,
+        RetryMode::Same => retry_count,
+        RetryMode::Pool => retry_count * available_count,
     };
 
     let mut last_error = None;
     let mut tried_ids: Vec<String> = Vec::new();
+    let mut first_endpoint_id: Option<String> = None;
 
     for attempt in 0..max_retries {
-        let endpoint_id = if attempt == 0 {
-            Scheduler::select_endpoint(state, &pool.id, &algorithm)
-                .ok_or_else(|| AppError::Proxy("池中没有可用的代理端点".to_string()))?
+        let endpoint_id = if attempt == 0 || retry_mode == RetryMode::Same {
+            // 首次或原地重试：使用调度算法选择端点
+            if retry_mode == RetryMode::Same && first_endpoint_id.is_some() {
+                first_endpoint_id.clone().unwrap()
+            } else {
+                let id = Scheduler::select_endpoint(state, &pool.id, &algorithm)
+                    .ok_or_else(|| AppError::Proxy("池中没有可用的代理端点".to_string()))?;
+                first_endpoint_id = Some(id.clone());
+                id
+            }
         } else {
-            Scheduler::select_next_for_retry(state, &pool.id, &tried_ids)
-                .ok_or_else(|| AppError::Proxy("所有代理端点均不可用".to_string()))?
+            // 端点重试：排除已尝试的端点
+            match Scheduler::select_next_for_retry(state, &pool.id, &tried_ids) {
+                Some(id) => id,
+                None => break, // 所有端点都已尝试
+            }
         };
 
-        tried_ids.push(endpoint_id.clone());
+        if retry_mode != RetryMode::Same || attempt == 0 {
+            tried_ids.push(endpoint_id.clone());
+        }
 
         let endpoint = state
             .get_endpoint(&endpoint_id)
@@ -245,7 +260,6 @@ pub async fn forward_request(
 
         // 计算实际路径（去掉对外API的前缀）
         let actual_path = path.strip_prefix(&exposed_api.prefix).unwrap_or(path);
-        // build_target_url 会自动补全 /v1，这里不再重复添加
         let target_path = actual_path.to_string();
         
         // 根据池的模型模式处理请求体
@@ -260,7 +274,8 @@ pub async fn forward_request(
                 state.increment_endpoint_errors(&endpoint_id);
                 last_error = Some(e);
 
-                if algorithm != ScheduleAlgorithm::Random {
+                // 无重试模式直接返回
+                if retry_mode == RetryMode::None {
                     break;
                 }
             }
@@ -289,27 +304,41 @@ pub async fn forward_stream_request(
         .ok_or_else(|| AppError::Internal(format!("池不存在: {}", exposed_api.pool_id)))?;
 
     let algorithm = pool.schedule_algorithm.clone();
+    let retry_mode = pool.retry_mode.clone();
+    let retry_count = pool.retry_count.max(1) as usize;
 
     // 计算最大重试次数
-    let available_count = state.available_endpoint_ids_in_pool(&pool.id).len();
-    let max_retries = match algorithm {
-        ScheduleAlgorithm::Random => available_count,
-        _ => 1,
+    let available_count = state.available_endpoint_ids_in_pool(&pool.id).len().max(1);
+    let max_retries = match retry_mode {
+        RetryMode::None => 1,
+        RetryMode::Same => retry_count,
+        RetryMode::Pool => retry_count * available_count,
     };
 
     let mut last_error = None;
     let mut tried_ids: Vec<String> = Vec::new();
+    let mut first_endpoint_id: Option<String> = None;
 
     for attempt in 0..max_retries {
-        let endpoint_id = if attempt == 0 {
-            Scheduler::select_endpoint(state.get_ref(), &pool.id, &algorithm)
-                .ok_or_else(|| AppError::Proxy("池中没有可用的代理端点".to_string()))?
+        let endpoint_id = if attempt == 0 || retry_mode == RetryMode::Same {
+            if retry_mode == RetryMode::Same && first_endpoint_id.is_some() {
+                first_endpoint_id.clone().unwrap()
+            } else {
+                let id = Scheduler::select_endpoint(state.get_ref(), &pool.id, &algorithm)
+                    .ok_or_else(|| AppError::Proxy("池中没有可用的代理端点".to_string()))?;
+                first_endpoint_id = Some(id.clone());
+                id
+            }
         } else {
-            Scheduler::select_next_for_retry(state.get_ref(), &pool.id, &tried_ids)
-                .ok_or_else(|| AppError::Proxy("所有代理端点均不可用".to_string()))?
+            match Scheduler::select_next_for_retry(state.get_ref(), &pool.id, &tried_ids) {
+                Some(id) => id,
+                None => break,
+            }
         };
 
-        tried_ids.push(endpoint_id.clone());
+        if retry_mode != RetryMode::Same || attempt == 0 {
+            tried_ids.push(endpoint_id.clone());
+        }
 
         let endpoint = state
             .get_endpoint(&endpoint_id)
@@ -374,7 +403,7 @@ pub async fn forward_stream_request(
                 state.increment_endpoint_errors(&endpoint_id);
                 last_error = Some(AppError::Proxy(error_msg));
 
-                if algorithm != ScheduleAlgorithm::Random {
+                if retry_mode != RetryMode::None {
                     break;
                 }
                 continue;
@@ -391,7 +420,7 @@ pub async fn forward_stream_request(
                 resp_status, error_body
             )));
 
-            if algorithm != ScheduleAlgorithm::Random {
+            if retry_mode != RetryMode::None {
                 break;
             }
             continue;
@@ -407,7 +436,7 @@ pub async fn forward_stream_request(
                 warn!("端点 {} 读取响应流失败: {}", endpoint.config.name, e);
                 state.increment_endpoint_errors(&endpoint_id);
                 last_error = Some(AppError::Proxy(format!("读取响应流失败: {}", e)));
-                if algorithm != ScheduleAlgorithm::Random {
+                if retry_mode != RetryMode::None {
                     break;
                 }
                 continue;
@@ -416,7 +445,7 @@ pub async fn forward_stream_request(
                 warn!("端点 {} 返回空响应", endpoint.config.name);
                 state.increment_endpoint_errors(&endpoint_id);
                 last_error = Some(AppError::Proxy("上游返回空响应".to_string()));
-                if algorithm != ScheduleAlgorithm::Random {
+                if retry_mode != RetryMode::None {
                     break;
                 }
                 continue;
@@ -428,7 +457,7 @@ pub async fn forward_stream_request(
             warn!("端点 {} 响应中包含错误 [{}]: {}", endpoint.config.name, error_code, error_msg);
             state.increment_endpoint_errors(&endpoint_id);
             last_error = Some(AppError::Proxy(format!("上游错误 [{}]: {}", error_code, error_msg)));
-            if algorithm != ScheduleAlgorithm::Random {
+            if retry_mode != RetryMode::None {
                 break;
             }
             continue;
