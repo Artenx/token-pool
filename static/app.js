@@ -2129,27 +2129,25 @@ async function handleTestApi() {
 
         let models = [];
         let modelMappings = []; // 存储映射关系
+        let selectedEndpointId = null; // 记录选择的端点ID
         
-        // 映射模式：从所有端点的模型映射中收集客户端模型名称
+        // 随机选择一个端点
+        const randomIndex = Math.floor(Math.random() * poolEndpoints.length);
+        const selectedEndpoint = poolEndpoints[randomIndex];
+        selectedEndpointId = selectedEndpoint.id;
+        
+        // 映射模式：从选中端点的模型映射中获取客户端模型名称
         if (pool && pool.model_mode === 'mapping') {
-            const clientModels = new Set();
-            for (const ep of poolEndpoints) {
-                const epRes = await fetch(`${API_BASE}/endpoints/${ep.id}`);
-                if (epRes.ok) {
-                    const fullEp = await epRes.json();
-                    const mappings = fullEp.config.model_mappings || [];
-                    mappings.forEach(m => {
-                        clientModels.add(m.client_model);
-                        modelMappings.push(m);
-                    });
-                }
+            const epRes = await fetch(`${API_BASE}/endpoints/${selectedEndpoint.id}`);
+            if (epRes.ok) {
+                const fullEp = await epRes.json();
+                const mappings = fullEp.config.model_mappings || [];
+                models = mappings.map(m => m.client_model);
+                modelMappings = mappings;
             }
-            models = Array.from(clientModels);
         } else {
-            // 透传模式：随机选择一个端点获取模型列表
-            const randomIndex = Math.floor(Math.random() * poolEndpoints.length);
-            const endpoint = poolEndpoints[randomIndex];
-            const epRes = await fetch(`${API_BASE}/endpoints/${endpoint.id}`);
+            // 透传模式：从选中端点获取模型列表
+            const epRes = await fetch(`${API_BASE}/endpoints/${selectedEndpoint.id}`);
             if (!epRes.ok) {
                 throw new Error('获取端点信息失败');
             }
@@ -2181,7 +2179,8 @@ async function handleTestApi() {
                 api_key: apiKey,
                 api_type: apiType,
                 base_url: baseUrl,
-                model_mappings: modelMappings
+                model_mappings: modelMappings,
+                endpoint_id: selectedEndpointId
             });
             if (modelsModalFooter) {
                 modelsModalFooter.style.display = 'block';
@@ -2263,10 +2262,12 @@ async function confirmApiModelAndTest() {
             return;
         }
         
-        // 随机选择一个端点获取完整信息
-        const randomIndex = Math.floor(Math.random() * poolEndpoints.length);
-        const endpoint = poolEndpoints[randomIndex];
-        const epRes = await fetch(`${API_BASE}/endpoints/${endpoint.id}`);
+        // 使用存储的端点ID获取完整信息
+        const endpointId = apiData.endpoint_id;
+        if (!endpointId) {
+            throw new Error('未选择端点');
+        }
+        const epRes = await fetch(`${API_BASE}/endpoints/${endpointId}`);
         if (!epRes.ok) {
             throw new Error('获取端点信息失败');
         }
