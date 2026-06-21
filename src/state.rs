@@ -547,6 +547,17 @@ impl AppState {
                         ep.last_reset = dt.with_timezone(&chrono::Utc);
                     }
                 }
+                if let Some(used_str) = state_data.get("last_used").and_then(|v| v.as_str()) {
+                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(used_str) {
+                        ep.last_used = Some(dt.with_timezone(&chrono::Utc));
+                    }
+                }
+                if let Some(errors) = state_data.get("error_count").and_then(|v| v.as_u64()) {
+                    ep.error_count = errors as u32;
+                }
+                if let Some(reqs) = state_data.get("total_requests").and_then(|v| v.as_u64()) {
+                    ep.total_requests = reqs;
+                }
             }
         }
         info!("已从状态文件恢复 {} 个端点的运行时状态", count);
@@ -561,6 +572,9 @@ impl AppState {
                 (id.clone(), serde_json::json!({
                     "tokens_used": ep.tokens_used,
                     "last_reset": ep.last_reset,
+                    "last_used": ep.last_used,
+                    "error_count": ep.error_count,
+                    "total_requests": ep.total_requests,
                 }))
             }).collect()
         };
