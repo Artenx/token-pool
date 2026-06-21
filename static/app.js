@@ -127,25 +127,32 @@ function updateEndpointFullUrl() {
         return;
     }
     
-    let path = '';
+    // 根据接口类型确定端点路径
+    let endpoint = '';
     switch (apiType) {
         case 'openai':
-            path = '/v1/chat/completions';
+            endpoint = '/chat/completions';
             break;
         case 'anthropic':
-            path = '/v1/messages';
+            endpoint = '/messages';
             break;
         case 'openai-responses':
-            path = '/v1/responses';
+            endpoint = '/responses';
             break;
         default:
-            path = '/v1/chat/completions';
+            endpoint = '/chat/completions';
     }
     
     const cleanBase = baseUrl.replace(/\/+$/, '');
-    const fullUrl = cleanBase.endsWith('/v1') 
-        ? cleanBase + path.replace('/v1', '')
-        : cleanBase + path;
+    
+    // 检查 URL 路径中是否已包含版本前缀（如 /v1, /v6 等）
+    // 如果已有版本前缀，直接拼接端点；否则添加 /v1
+    const urlPath = new URL(cleanBase).pathname;
+    const hasVersionPrefix = /\/v\d+/.test(urlPath);
+    
+    const fullUrl = hasVersionPrefix
+        ? cleanBase + endpoint
+        : cleanBase + '/v1' + endpoint;
     
     fullUrlDiv.textContent = '完整路径: ' + fullUrl;
 }

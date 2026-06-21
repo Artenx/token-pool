@@ -175,22 +175,30 @@ fn build_target_url(base_url: &str, path: &str) -> String {
     let base = base_url.trim_end_matches('/');
     let path = path.trim_start_matches('/');
     
+    // 如果 base_url 已经包含 /v1 前缀，且 path 也以 v1/ 开头，则去掉 path 中的 v1/
     if (base.ends_with("/v1") || base.ends_with("/v1/")) && (path.starts_with("v1/") || path == "v1") {
         let stripped = path.strip_prefix("v1/").or_else(|| path.strip_prefix("v1")).unwrap_or("");
         return format!("{}/{}", base, stripped);
     }
     
+    // 如果 path 已经包含 v1/ 前缀，直接拼接
     if path.starts_with("v1/") || path == "v1" {
         return format!("{}/{}", base, path);
     }
     
-    let full_base = if base.ends_with("/v1") || base.ends_with("/v1/") {
-        base.to_string()
-    } else {
-        format!("{}/v1", base)
-    };
+    // 检查 base_url 路径中是否已包含版本前缀（如 /v1, /v6, /v2 等）
+    // 通过检查路径中是否有 /v数字 的模式
+    let has_version = base.split('/').any(|seg| {
+        seg.len() >= 2 && seg.starts_with('v') && seg[1..].chars().all(|c| c.is_ascii_digit())
+    });
     
-    format!("{}/{}", full_base, path)
+    if has_version {
+        // 已有版本前缀，直接拼接
+        format!("{}/{}", base, path)
+    } else {
+        // 没有版本前缀，添加 /v1
+        format!("{}/v1/{}", base, path)
+    }
 }
 
 // ========== 公共重试逻辑 ==========
