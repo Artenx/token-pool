@@ -198,8 +198,7 @@ pub async fn get_stats(
     Ok(HttpResponse::Ok().json(stats))
 }
 
-/// 检查端点是否可用
-/// 浏览模型列表
+/// 获取端点支持的模型列表
 pub async fn list_models(
     state: web::Data<AppState>,
     req: HttpRequest,

@@ -92,6 +92,22 @@ async fn main() -> std::io::Result<()> {
         }
     });
 
+    // 启动运行时状态持久化任务（每10秒保存一次）
+    let save_state = reset_state.clone();
+    tokio::spawn(async move {
+        use std::sync::atomic::Ordering;
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+            if save_state.dirty.load(Ordering::Acquire) {
+                if let Err(e) = save_state.save_runtime_state().await {
+                    tracing::warn!("保存运行时状态失败: {}", e);
+                }
+                save_state.dirty.store(false, Ordering::Release);
+            }
+        }
+    });
+
     // 启动模型缓存更新任务（每小时更新一次）
     let cache_state = reset_state.clone();
     tokio::spawn(async move {

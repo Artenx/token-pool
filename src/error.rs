@@ -7,7 +7,17 @@ pub enum AppError {
     Unauthorized,
     BadRequest(String),
     Internal(String),
+    /// 可重试的代理错误（网络问题、5xx、429）
     Proxy(String),
+    /// 不可重试的上游错误（4xx 除 429 外），不会触发重试
+    UpstreamError(String),
+}
+
+impl AppError {
+    /// 判断错误是否应该触发重试
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, AppError::Proxy(_))
+    }
 }
 
 impl fmt::Display for AppError {
@@ -18,6 +28,7 @@ impl fmt::Display for AppError {
             AppError::BadRequest(msg) => write!(f, "请求错误: {}", msg),
             AppError::Internal(msg) => write!(f, "内部错误: {}", msg),
             AppError::Proxy(msg) => write!(f, "代理错误: {}", msg),
+            AppError::UpstreamError(msg) => write!(f, "上游错误: {}", msg),
         }
     }
 }
@@ -31,6 +42,7 @@ impl ResponseError for AppError {
                     AppError::Unauthorized => "authentication_error",
                     AppError::BadRequest(_) => "invalid_request_error",
                     AppError::NotFound(_) => "not_found_error",
+                    AppError::UpstreamError(_) => "upstream_error",
                     _ => "server_error",
                 }
             }
@@ -39,6 +51,7 @@ impl ResponseError for AppError {
             AppError::Unauthorized => HttpResponse::Unauthorized().json(body),
             AppError::NotFound(_) => HttpResponse::NotFound().json(body),
             AppError::BadRequest(_) => HttpResponse::BadRequest().json(body),
+            AppError::UpstreamError(_) => HttpResponse::BadGateway().json(body),
             _ => HttpResponse::InternalServerError().json(body),
         }
     }

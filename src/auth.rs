@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use crate::state::AppState;
 use actix_web::{web, HttpRequest, HttpResponse};
+use actix_web::cookie::SameSite;
 use serde::Deserialize;
 
 /// 登录请求
@@ -69,6 +70,7 @@ pub fn check_api_auth(
 
 /// 管理后台登录
 pub async fn admin_login(
+    req: HttpRequest,
     state: web::Data<AppState>,
     body: web::Json<LoginRequest>,
 ) -> Result<HttpResponse, AppError> {
@@ -84,11 +86,13 @@ pub async fn admin_login(
         }));
 
         // 设置登录cookie
+        let is_secure = req.uri().scheme_str() == Some("https");
         response.add_cookie(
             &actix_web::cookie::Cookie::build("admin_logged_in", "true")
                 .path("/")
                 .http_only(true)
-                .secure(false) // 在生产环境中应设置为true
+                .secure(is_secure)
+                .same_site(SameSite::Lax)
                 .max_age(actix_web::cookie::time::Duration::hours(24))
                 .finish(),
         ).map_err(|e| AppError::Internal(e.to_string()))?;

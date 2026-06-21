@@ -36,6 +36,13 @@ impl ConfigManager {
         }
     }
 
+    /// 获取配置文件所在目录
+    pub fn config_dir(&self) -> PathBuf {
+        self.config_path.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
     /// 保存配置到文件
     pub async fn save(&self, config: &AppConfig) -> Result<()> {
         let content = toml::to_string_pretty(config)

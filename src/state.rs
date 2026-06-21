@@ -2,6 +2,9 @@ use crate::models::*;
 use chrono::Utc;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tracing::{debug, info, warn};
 
 /// 应用程序共享状态
@@ -20,6 +23,12 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     /// 配置文件管理器
     pub config_manager: crate::config::ConfigManager,
+    /// 运行时状态文件路径
+    pub state_path: PathBuf,
+    /// 数据变更标记（用于后台持久化）
+    pub dirty: AtomicBool,
+    /// 持久化写锁（防止并发写入导致数据覆盖）
+    pub save_state_mutex: tokio::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -36,7 +45,9 @@ impl AppState {
             .timeout(std::time::Duration::from_secs(300))
             .build()?;
 
-        Ok(Self {
+        let state_path = config_manager.config_dir().join("state.json");
+
+        let app = Self {
             config: RwLock::new(config),
             endpoints: RwLock::new(endpoints),
             scheduler_index: RwLock::new(HashMap::new()),
@@ -44,7 +55,15 @@ impl AppState {
             model_cache: RwLock::new(HashMap::new()),
             http_client,
             config_manager,
-        })
+            state_path,
+            dirty: AtomicBool::new(false),
+            save_state_mutex: tokio::sync::Mutex::new(()),
+        };
+
+        // 从 state.json 恢复运行时状态
+        app.load_runtime_state();
+
+        Ok(app)
     }
 
     /// 获取指定池中可用的端点ID列表
@@ -59,28 +78,10 @@ impl AppState {
             .collect()
     }
 
-    /// 获取所有可用的端点ID列表
-    #[allow(dead_code)]
-    pub fn available_endpoint_ids(&self) -> Vec<String> {
-        let endpoints = self.endpoints.read();
-        endpoints
-            .values()
-            .filter(|ep| ep.is_available())
-            .map(|ep| ep.config.id.clone())
-            .collect()
-    }
-
     /// 获取端点状态
     pub fn get_endpoint(&self, id: &str) -> Option<EndpointState> {
         let endpoints = self.endpoints.read();
         endpoints.get(id).cloned()
-    }
-
-    /// 获取所有端点状态
-    #[allow(dead_code)]
-    pub fn get_all_endpoints(&self) -> Vec<EndpointState> {
-        let endpoints = self.endpoints.read();
-        endpoints.values().cloned().collect()
     }
 
     /// 更新端点token使用量
@@ -90,6 +91,7 @@ impl AppState {
             ep.add_tokens(tokens);
             tracing::debug!("端点 {} 消耗 {} tokens, 总计: {}/{}", id, tokens, ep.tokens_used, ep.config.token_limit);
         }
+        self.mark_dirty();
     }
 
     /// 增加端点错误计数
@@ -222,6 +224,7 @@ impl AppState {
         let mut endpoints = self.endpoints.write();
         let ep = endpoints.get_mut(id).ok_or_else(|| anyhow::anyhow!("端点不存在: {}", id))?;
         ep.reset();
+        self.mark_dirty();
         info!("已重置端点 {} 的token使用量", ep.config.name);
         Ok(())
     }
@@ -232,6 +235,7 @@ impl AppState {
         for ep in endpoints.values_mut() {
             ep.reset();
         }
+        self.mark_dirty();
         info!("已重置所有端点的token使用量");
     }
 
@@ -290,6 +294,14 @@ impl AppState {
 
     /// 删除池
     pub async fn delete_pool(&self, id: &str) -> anyhow::Result<()> {
+        // 同步清理内存中端点的 pool_ids
+        {
+            let mut endpoints = self.endpoints.write();
+            for ep in endpoints.values_mut() {
+                ep.config.pool_ids.retain(|pid| pid != id);
+            }
+        }
+
         let config_to_save = {
             let mut config = self.config.write();
             config.pools.retain(|p| p.id != id);
@@ -311,13 +323,6 @@ impl AppState {
     pub fn get_pool(&self, id: &str) -> Option<Pool> {
         let config = self.config.read();
         config.pools.iter().find(|p| p.id == id).cloned()
-    }
-
-    /// 获取所有池
-    #[allow(dead_code)]
-    pub fn get_all_pools(&self) -> Vec<Pool> {
-        let config = self.config.read();
-        config.pools.clone()
     }
 
     // ========== 对外API管理 ==========
@@ -401,33 +406,12 @@ impl AppState {
         Ok(api)
     }
 
-    /// 获取对外API
-    #[allow(dead_code)]
-    pub fn get_exposed_api(&self, id: &str) -> Option<ExposedApi> {
-        let config = self.config.read();
-        config.exposed_apis.iter().find(|a| a.id == id).cloned()
-    }
-
-    /// 根据前缀获取对外API
-    #[allow(dead_code)]
-    pub fn get_exposed_api_by_prefix(&self, prefix: &str) -> Option<ExposedApi> {
-        let config = self.config.read();
-        config.exposed_apis.iter().find(|a| a.prefix == prefix && a.enabled).cloned()
-    }
-
-    /// 获取所有对外API
-    #[allow(dead_code)]
-    pub fn get_all_exposed_apis(&self) -> Vec<ExposedApi> {
-        let config = self.config.read();
-        config.exposed_apis.clone()
-    }
-
-    /// 根据请求路径匹配对外API
+    /// 根据请求路径匹配对外API（取最长前缀匹配）
     pub fn match_exposed_api(&self, path: &str) -> Option<ExposedApi> {
         let config = self.config.read();
         config.exposed_apis.iter()
-            .filter(|a| a.enabled)
-            .find(|a| path.starts_with(&a.prefix))
+            .filter(|a| a.enabled && path.starts_with(&a.prefix))
+            .max_by_key(|a| a.prefix.len())
             .cloned()
     }
 
@@ -439,9 +423,9 @@ impl AppState {
         let config = self.config.read();
 
         let active_count = endpoints.values().filter(|ep| ep.is_available()).count();
-        // 排除无限制（999999999999）的端点
+        // 排除无限制（token_limit == 0）的端点
         let limited_endpoints: Vec<_> = endpoints.values()
-            .filter(|ep| ep.config.token_limit != 999999999999)
+            .filter(|ep| ep.config.token_limit != 0)
             .collect();
         let total_tokens_used: u64 = limited_endpoints.iter().map(|ep| ep.tokens_used).sum();
         let total_tokens_limit: u64 = limited_endpoints.iter().map(|ep| ep.config.token_limit).sum();
@@ -526,6 +510,71 @@ impl AppState {
         }
     }
 
+    /// 标记数据为脏（需要持久化）
+    pub fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    /// 从 state.json 加载端点的运行时状态
+    pub fn load_runtime_state(&self) {
+        let path = &self.state_path;
+        if !path.exists() {
+            return;
+        }
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("读取状态文件失败: {}", e);
+                return;
+            }
+        };
+        let data: HashMap<String, serde_json::Value> = match serde_json::from_str(&content) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("解析状态文件失败: {}", e);
+                return;
+            }
+        };
+        let count = data.len();
+        let mut endpoints = self.endpoints.write();
+        for (id, state_data) in &data {
+            if let Some(ep) = endpoints.get_mut(id) {
+                if let Some(tokens) = state_data.get("tokens_used").and_then(|v| v.as_u64()) {
+                    ep.tokens_used = tokens;
+                }
+                if let Some(reset_str) = state_data.get("last_reset").and_then(|v| v.as_str()) {
+                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(reset_str) {
+                        ep.last_reset = dt.with_timezone(&chrono::Utc);
+                    }
+                }
+            }
+        }
+        info!("已从状态文件恢复 {} 个端点的运行时状态", count);
+    }
+
+    /// 异步保存运行时状态到 state.json
+    pub async fn save_runtime_state(&self) -> anyhow::Result<()> {
+        let _guard = self.save_state_mutex.lock().await;
+        let data: HashMap<String, serde_json::Value> = {
+            let endpoints = self.endpoints.read();
+            endpoints.iter().map(|(id, ep)| {
+                (id.clone(), serde_json::json!({
+                    "tokens_used": ep.tokens_used,
+                    "last_reset": ep.last_reset,
+                }))
+            }).collect()
+        };
+        let json = serde_json::to_string_pretty(&data)
+            .map_err(|e| anyhow::anyhow!("序列化运行时状态失败: {}", e))?;
+        if let Some(parent) = self.state_path.parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+        tokio::fs::write(&self.state_path, json).await
+            .map_err(|e| anyhow::anyhow!("写入状态文件失败: {}", e))?;
+        debug!("已保存运行时状态 ({})", data.len());
+        Ok(())
+    }
+
     /// 更新管理密码
     pub async fn change_admin_password(&self, new_password: &str) -> anyhow::Result<()> {
         let config_to_save = {
@@ -550,22 +599,13 @@ impl AppState {
                 if last_reset_date < today {
                     ep.tokens_used = 0;
                     ep.last_reset = now;
+                    self.mark_dirty();
                     info!("端点 {} 每日自动重置", ep.config.name);
                 }
             }
             
             // 手动重置模式：不做任何操作，已使用达到限额时 is_available() 自动返回 false
         }
-    }
-
-    /// 获取池的调度算法
-    #[allow(dead_code)]
-    pub fn get_pool_schedule_algorithm(&self, pool_id: &str) -> ScheduleAlgorithm {
-        let config = self.config.read();
-        config.pools.iter()
-            .find(|p| p.id == pool_id)
-            .map(|p| p.schedule_algorithm.clone())
-            .unwrap_or(ScheduleAlgorithm::RoundRobin)
     }
 
     /// 获取调度器索引
@@ -605,13 +645,6 @@ impl AppState {
         let mut cache = self.model_cache.write();
         cache.insert(endpoint_id.to_string(), models);
         debug!("已更新端点 {} 的模型缓存", endpoint_id);
-    }
-
-    /// 清除端点的模型列表缓存
-    #[allow(dead_code)]
-    pub fn clear_model_cache(&self, endpoint_id: &str) {
-        let mut cache = self.model_cache.write();
-        cache.remove(endpoint_id);
     }
 
     /// 从 API 获取端点的模型列表

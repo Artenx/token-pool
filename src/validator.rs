@@ -36,25 +36,6 @@ impl InputValidator {
         Ok(())
     }
 
-    /// 验证 API 前缀
-    #[allow(dead_code)]
-    pub fn validate_prefix(prefix: &str) -> Result<(), String> {
-        if prefix.is_empty() {
-            return Err("前缀不能为空".to_string());
-        }
-        if prefix.len() > 100 {
-            return Err("前缀长度不能超过100个字符".to_string());
-        }
-        if !prefix.starts_with('/') {
-            return Err("前缀必须以 / 开头".to_string());
-        }
-        // 只允许字母、数字、下划线、斜杠、连字符
-        if !prefix.chars().all(|c| c.is_alphanumeric() || c == '/' || c == '_' || c == '-') {
-            return Err("前缀只能包含字母、数字、/、_、-".to_string());
-        }
-        Ok(())
-    }
-
     /// 验证 API Key（可选字段）
     pub fn validate_api_key(key: &str) -> Result<(), String> {
         if key.is_empty() {
@@ -66,27 +47,6 @@ impl InputValidator {
         // 检查是否包含控制字符
         if key.chars().any(|c| c.is_control()) {
             return Err("API Key包含非法字符".to_string());
-        }
-        Ok(())
-    }
-
-    /// 验证密码强度
-    #[allow(dead_code)]
-    pub fn validate_password(password: &str) -> Result<(), String> {
-        if password.len() < 6 {
-            return Err("密码长度不能少于6个字符".to_string());
-        }
-        if password.len() > 128 {
-            return Err("密码长度不能超过128个字符".to_string());
-        }
-        Ok(())
-    }
-
-    /// 验证描述文本
-    #[allow(dead_code)]
-    pub fn validate_description(desc: &str) -> Result<(), String> {
-        if desc.len() > 500 {
-            return Err("描述长度不能超过500个字符".to_string());
         }
         Ok(())
     }

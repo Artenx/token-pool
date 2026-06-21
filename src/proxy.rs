@@ -239,13 +239,20 @@ impl RetryContext {
     /// 选择当前尝试的端点
     fn select_endpoint(&mut self, state: &AppState, attempt: usize) -> Option<String> {
         let endpoint_id = if attempt == 0 || self.retry_mode == RetryMode::Same {
-            if self.retry_mode == RetryMode::Same && self.first_endpoint_id.is_some() {
-                self.first_endpoint_id.clone().unwrap()
-            } else {
-                let id = Scheduler::select_endpoint(state, &self.pool.id, &self.algorithm)?;
-                self.first_endpoint_id = Some(id.clone());
-                id
+            if self.retry_mode == RetryMode::Same {
+                if let Some(cached_id) = self.first_endpoint_id.as_ref() {
+                    // Same 模式：检查缓存的端点是否仍然可用
+                    if state.get_endpoint(cached_id).as_ref().map_or(false, |ep| ep.is_available()) {
+                        return Some(cached_id.clone());
+                    }
+                    // 端点不可用（如 token 耗尽），重新调度
+                    warn!("Same 模式缓存端点不可用，重新选择端点: {}", cached_id);
+                    self.first_endpoint_id = None;
+                }
             }
+            let id = Scheduler::select_endpoint(state, &self.pool.id, &self.algorithm)?;
+            self.first_endpoint_id = Some(id.clone());
+            id
         } else {
             Scheduler::select_next_for_retry(state, &self.pool.id, &self.tried_ids)?
         };
@@ -259,8 +266,9 @@ impl RetryContext {
 
     /// 记录错误并判断是否继续重试
     fn record_error(&mut self, e: AppError) -> bool {
+        let retryable = e.is_retryable();
         self.last_error = Some(e);
-        self.retry_mode != RetryMode::None
+        retryable && self.retry_mode != RetryMode::None
     }
 
     /// 返回最终错误
@@ -422,11 +430,17 @@ pub async fn forward_stream_request(
             let error_body = response.text().await.unwrap_or_default();
             warn!("端点 {} 返回错误状态 {}: {}", endpoint.config.name, resp_status, error_body);
             state.increment_endpoint_errors(&endpoint_id);
-            let e = AppError::Proxy(format!("上游返回状态 {}: {}", resp_status, error_body));
+            let e = if resp_status.is_client_error() && resp_status.as_u16() != 429 {
+                AppError::UpstreamError(format!("上游返回状态 {}: {}", resp_status, error_body))
+            } else {
+                AppError::Proxy(format!("上游返回状态 {}: {}", resp_status, error_body))
+            };
             if !ctx.record_error(e) { break; }
             continue;
         }
 
+        // 保存上游响应头，后续透传给客户端
+        let upstream_headers = response.headers().clone();
         let mut stream = response.bytes_stream();
 
         let first_chunk = match stream.next().await {
@@ -463,7 +477,17 @@ pub async fn forward_stream_request(
         let first_stream = futures_util::stream::once(async move { Ok::<_, reqwest::Error>(first_chunk) });
         let full_stream = first_stream.chain(stream);
 
-        let body_stream = actix_web::HttpResponse::Ok()
+        let mut response_builder = actix_web::HttpResponse::Ok();
+        // 透传上游响应头（白名单），保留 SSE 必需头
+        for (key, value) in &upstream_headers {
+            let key_str = key.as_str().to_lowercase();
+            if key_str.starts_with("x-") || key_str == "cache-control" {
+                if let Ok(v) = value.to_str() {
+                    response_builder.insert_header((key.as_str(), v));
+                }
+            }
+        }
+        let body_stream = response_builder
             .content_type("text/event-stream")
             .insert_header(("Cache-Control", "no-cache"))
             .insert_header(("Connection", "keep-alive"))
@@ -521,6 +545,10 @@ async fn forward_to_endpoint(
     if status != 200 {
         let error_body = response.text().await.unwrap_or_default();
         error!("端点 {} 返回错误状态 {}: {}", endpoint.config.name, status, error_body);
+        if status.is_client_error() && status.as_u16() != 429 {
+            // 4xx 除 429 外为客户端请求问题，重试其他端点也会得到相同错误，直接返回
+            return Err(AppError::UpstreamError(format!("上游返回状态 {}: {}", status, error_body)));
+        }
         return Err(AppError::Proxy(format!("上游返回状态 {}: {}", status, error_body)));
     }
 
