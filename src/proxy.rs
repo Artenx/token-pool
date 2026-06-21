@@ -263,7 +263,18 @@ pub async fn forward_request(
         let target_path = actual_path.to_string();
         
         // 根据池的模型模式处理请求体
-        let mapped_body = map_model_name(&body, &endpoint, &pool, state).await?;
+        let mapped_body = match map_model_name(&body, &endpoint, &pool, state).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("端点 {} 模型名称处理失败: {}", endpoint.config.name, e);
+                state.increment_endpoint_errors(&endpoint_id);
+                last_error = Some(e);
+                if retry_mode == RetryMode::None {
+                    break;
+                }
+                continue;
+            }
+        };
 
         match forward_to_endpoint(state, req, &mapped_body, &endpoint, &target_path, &exposed_api.api_type).await {
             Ok(response) => {
@@ -350,7 +361,18 @@ pub async fn forward_stream_request(
         let target_url = build_target_url(&endpoint.config.url, &target_path, &exposed_api.api_type);
         
         // 根据池的模型模式处理请求体
-        let mapped_body = map_model_name(&body, &endpoint, &pool, state.get_ref()).await?;
+        let mapped_body = match map_model_name(&body, &endpoint, &pool, state.get_ref()).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("端点 {} 模型名称处理失败: {}", endpoint.config.name, e);
+                state.increment_endpoint_errors(&endpoint_id);
+                last_error = Some(e);
+                if retry_mode == RetryMode::None {
+                    break;
+                }
+                continue;
+            }
+        };
 
         debug!("流式转发到: {} (尝试 {}/{})", target_url, attempt + 1, max_retries);
 
