@@ -19,9 +19,10 @@ const ERROR_KEYWORDS: &[&str] = &[
     "capacity exceeded",
 ];
 
+// ========== 错误检测 ==========
+
 /// 检查内容文本是否包含已知错误关键词（仅对短内容检测，避免影响正常回复）
 fn check_content_error(content: &str) -> Option<(String, String)> {
-    // 错误信息通常很短（<200字符），正常回复的 content 通常较长
     if content.len() > 200 {
         return None;
     }
@@ -34,35 +35,28 @@ fn check_content_error(content: &str) -> Option<(String, String)> {
     None
 }
 
-/// 检查单个 JSON 对象是否为错误响应（兼容三种接口类型）
-/// 返回 Some((error_code, error_message)) 如果是错误
+/// 检查单个 JSON 对象是否为错误响应（兼容多种接口类型）
 fn check_json_error(json: &Value) -> Option<(String, String)> {
-    // 跳过正常响应（有 choices 或 id 字段）
+    // 跳过正常响应（有 choices 或 id 字段），但检查 choices 中的 content
     if json.get("choices").is_some() || json.get("id").is_some() {
-        // 但检查 choices 中的 content 是否包含错误信息（上游可能把错误包装成模型输出）
         if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
             for choice in choices {
                 let content = choice
                     .get("delta").and_then(|d| d.get("content")).and_then(|c| c.as_str())
                     .or_else(|| choice.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_str()));
                 if let Some(content) = content {
-                    // 1. 检查内容中是否嵌入了 JSON 错误对象
                     if let Some(json_start) = content.find('{') {
                         let json_part = &content[json_start..];
                         if let Ok(err_json) = serde_json::from_str::<Value>(json_part) {
                             if err_json.get("error").is_some() {
                                 let msg = err_json["error"].get("message")
-                                    .and_then(|m| m.as_str())
-                                    .unwrap_or("未知错误")
-                                    .to_string();
+                                    .and_then(|m| m.as_str()).unwrap_or("未知错误").to_string();
                                 let code = err_json["error"].get("code")
-                                    .map(|c| c.to_string())
-                                    .unwrap_or_default();
+                                    .map(|c| c.to_string()).unwrap_or_default();
                                 return Some((code, msg));
                             }
                         }
                     }
-                    // 2. 检查内容是否包含已知错误关键词（纯文本错误）
                     if let Some(err) = check_content_error(content) {
                         return Some(err);
                     }
@@ -72,31 +66,24 @@ fn check_json_error(json: &Value) -> Option<(String, String)> {
         return None;
     }
 
-    // 1. OpenAI / ModelArts 格式: {"error": {"code": "...", "message": "..."}}
+    // OpenAI 格式: {"error": {"code": "...", "message": "..."}}
     if let Some(error_obj) = json.get("error") {
         let msg = error_obj.get("message").and_then(|m| m.as_str()).unwrap_or("未知错误").to_string();
         let code = error_obj.get("code").map(|c| c.to_string()).unwrap_or_default();
         return Some((code, msg));
     }
 
-    // 2. Anthropic 格式: {"type": "error", "error": {"type": "...", "message": "..."}}
-    //    已被上面的 json.get("error") 覆盖
-
-    // 3. 顶层 code+message 格式: {"code": 429, "message": "..."}
+    // 顶层 code+message 格式: {"code": 429, "message": "..."}
     if let (Some(code), Some(msg)) = (json.get("code"), json.get("message")) {
         if code.is_number() || code.is_string() {
-            let code_str = code.to_string();
-            let msg_str = msg.as_str().unwrap_or("未知错误").to_string();
-            return Some((code_str, msg_str));
+            return Some((code.to_string(), msg.as_str().unwrap_or("未知错误").to_string()));
         }
     }
 
-    // 4. NVIDIA 格式: {"status": 429, "title": "Too Many Requests"}
+    // NVIDIA 格式: {"status": 429, "title": "Too Many Requests"}
     if let (Some(status), Some(title)) = (json.get("status"), json.get("title")) {
         if status.is_number() {
-            let code_str = status.to_string();
-            let msg_str = title.as_str().unwrap_or("未知错误").to_string();
-            return Some((code_str, msg_str));
+            return Some((status.to_string(), title.as_str().unwrap_or("未知错误").to_string()));
         }
     }
 
@@ -104,11 +91,9 @@ fn check_json_error(json: &Value) -> Option<(String, String)> {
 }
 
 /// 检查响应体中是否包含错误（支持普通 JSON 和 SSE 格式）
-/// 返回 Some((error_code, error_message)) 如果检测到错误
 fn detect_response_error(body: &[u8]) -> Option<(String, String)> {
     let body_str = std::str::from_utf8(body).ok()?;
 
-    // 尝试直接解析为 JSON（非流式响应）
     if let Ok(json) = serde_json::from_str::<Value>(body_str) {
         return check_json_error(&json);
     }
@@ -118,24 +103,17 @@ fn detect_response_error(body: &[u8]) -> Option<(String, String)> {
         let mut is_error_event = false;
         for line in body_str.lines() {
             let line = line.trim();
-            // Anthropic 格式: event: error
             if line == "event: error" {
                 is_error_event = true;
                 continue;
             }
             if let Some(json_str) = line.strip_prefix("data: ") {
                 if let Ok(json) = serde_json::from_str::<Value>(json_str) {
-                    // 如果前面有 event: error，直接解析这个 data 行
                     if is_error_event {
-                        let msg = json.get("error")
-                            .and_then(|e| e.get("message"))
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("未知错误")
-                            .to_string();
-                        let code = json.get("error")
-                            .and_then(|e| e.get("type"))
-                            .map(|c| c.to_string())
-                            .unwrap_or_else(|| "error".to_string());
+                        let msg = json.get("error").and_then(|e| e.get("message"))
+                            .and_then(|m| m.as_str()).unwrap_or("未知错误").to_string();
+                        let code = json.get("error").and_then(|e| e.get("type"))
+                            .map(|c| c.to_string()).unwrap_or_else(|| "error".to_string());
                         return Some((code, msg));
                     }
                     if let Some(err) = check_json_error(&json) {
@@ -150,6 +128,8 @@ fn detect_response_error(body: &[u8]) -> Option<(String, String)> {
     None
 }
 
+// ========== 模型映射 ==========
+
 /// 根据模型映射转换请求体中的模型名称
 async fn map_model_name(
     body: &bytes::Bytes,
@@ -157,35 +137,28 @@ async fn map_model_name(
     pool: &Pool,
     state: &AppState,
 ) -> Result<bytes::Bytes, AppError> {
-    // 解析请求体
     let Ok(mut json) = serde_json::from_slice::<Value>(body) else {
         return Ok(body.clone());
     };
     
-    // 获取客户端请求的模型名称
     let client_model = json.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
     if client_model.is_empty() {
         return Ok(body.clone());
     }
     
-    // 检查是否有缓存，如果没有则尝试获取
     if state.get_cached_models(&endpoint.config.id).is_none() {
         let _ = state.fetch_endpoint_models(&endpoint.config.id).await;
     }
     
-    // 使用 state 的匹配函数
     let resolved_model = state.resolve_model_for_endpoint(pool, endpoint, &client_model);
     
-    // 如果模型名称发生变化，替换请求体
     if resolved_model != client_model {
-        // 检查是否是错误信息
         if let Some(error_msg) = resolved_model.strip_prefix("ERROR:") {
             return Err(AppError::BadRequest(error_msg.to_string()));
         }
         if let Some(obj) = json.as_object_mut() {
             obj.insert("model".to_string(), Value::String(resolved_model.clone()));
             debug!("模型映射: {} -> {}", client_model, resolved_model);
-            // 重新序列化
             if let Ok(new_body) = serde_json::to_vec(&json) {
                 return Ok(bytes::Bytes::from(new_body));
             }
@@ -195,108 +168,211 @@ async fn map_model_name(
     Ok(body.clone())
 }
 
-/// 处理API请求转发（基于对外API和池）
+// ========== URL 构建 ==========
+
+/// 根据 base_url 构建完整的目标 URL
+fn build_target_url(base_url: &str, path: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    
+    if (base.ends_with("/v1") || base.ends_with("/v1/")) && (path.starts_with("v1/") || path == "v1") {
+        let stripped = path.strip_prefix("v1/").or_else(|| path.strip_prefix("v1")).unwrap_or("");
+        return format!("{}/{}", base, stripped);
+    }
+    
+    if path.starts_with("v1/") || path == "v1" {
+        return format!("{}/{}", base, path);
+    }
+    
+    let full_base = if base.ends_with("/v1") || base.ends_with("/v1/") {
+        base.to_string()
+    } else {
+        format!("{}/v1", base)
+    };
+    
+    format!("{}/{}", full_base, path)
+}
+
+// ========== 公共重试逻辑 ==========
+
+/// 重试循环的上下文
+struct RetryContext {
+    exposed_api: ExposedApi,
+    pool: Pool,
+    algorithm: ScheduleAlgorithm,
+    retry_mode: RetryMode,
+    max_retries: usize,
+    last_error: Option<AppError>,
+    tried_ids: Vec<String>,
+    first_endpoint_id: Option<String>,
+}
+
+impl RetryContext {
+    fn new(state: &AppState, path: &str) -> Result<Self, AppError> {
+        let exposed_api = state.match_exposed_api(path)
+            .ok_or_else(|| AppError::NotFound(format!("未找到匹配的对外API: {}", path)))?;
+        let pool = state.get_pool(&exposed_api.pool_id)
+            .ok_or_else(|| AppError::Internal(format!("池不存在: {}", exposed_api.pool_id)))?;
+
+        let algorithm = pool.schedule_algorithm.clone();
+        let retry_mode = pool.retry_mode.clone();
+        let retry_count = pool.retry_count.max(1) as usize;
+        let available_count = state.available_endpoint_ids_in_pool(&pool.id).len().max(1);
+        let max_retries = match retry_mode {
+            RetryMode::None => 1,
+            RetryMode::Same => retry_count,
+            RetryMode::Pool => retry_count * available_count,
+        };
+
+        Ok(Self {
+            exposed_api,
+            pool,
+            algorithm,
+            retry_mode,
+            max_retries,
+            last_error: None,
+            tried_ids: Vec::new(),
+            first_endpoint_id: None,
+        })
+    }
+
+    /// 选择当前尝试的端点
+    fn select_endpoint(&mut self, state: &AppState, attempt: usize) -> Option<String> {
+        let endpoint_id = if attempt == 0 || self.retry_mode == RetryMode::Same {
+            if self.retry_mode == RetryMode::Same && self.first_endpoint_id.is_some() {
+                self.first_endpoint_id.clone().unwrap()
+            } else {
+                let id = Scheduler::select_endpoint(state, &self.pool.id, &self.algorithm)?;
+                self.first_endpoint_id = Some(id.clone());
+                id
+            }
+        } else {
+            Scheduler::select_next_for_retry(state, &self.pool.id, &self.tried_ids)?
+        };
+
+        if self.retry_mode != RetryMode::Same || attempt == 0 {
+            self.tried_ids.push(endpoint_id.clone());
+        }
+
+        Some(endpoint_id)
+    }
+
+    /// 记录错误并判断是否继续重试
+    fn record_error(&mut self, e: AppError) -> bool {
+        self.last_error = Some(e);
+        self.retry_mode != RetryMode::None
+    }
+
+    /// 返回最终错误
+    fn into_final_error(self) -> AppError {
+        if let Some(e) = &self.last_error {
+            warn!("端点池所有接口均不可用，最后错误: {}", e);
+        }
+        AppError::Proxy("端点池所有接口均不可用，请检查后重试。".to_string())
+    }
+}
+
+/// 构建上游请求
+fn build_upstream_request(
+    state: &AppState,
+    req: &HttpRequest,
+    endpoint: &EndpointState,
+    target_url: &str,
+    body: &[u8],
+) -> Result<reqwest::RequestBuilder, AppError> {
+    let mut builder = state.http_client.request(
+        reqwest::Method::from_bytes(req.method().as_str().as_bytes())
+            .map_err(|e| AppError::Proxy(format!("无效的HTTP方法: {}", e)))?,
+        target_url,
+    );
+
+    // 复制请求头（跳过认证头）
+    for (key, value) in req.headers() {
+        let key_str = key.as_str().to_lowercase();
+        if key_str != "host" && key_str != "content-length" && key_str != "authorization" && key_str != "x-api-key" {
+            if let Ok(v) = value.to_str() {
+                builder = builder.header(key.as_str(), v);
+            }
+        }
+    }
+
+    // 设置认证头
+    match endpoint.config.api_type {
+        ApiType::OpenAI | ApiType::OpenAIResponses => {
+            builder = builder.header("Authorization", format!("Bearer {}", endpoint.config.api_key));
+        }
+        ApiType::Anthropic => {
+            builder = builder.header("x-api-key", &endpoint.config.api_key);
+            builder = builder.header("anthropic-version", "2023-06-01");
+        }
+    }
+
+    if req.headers().get("content-type").is_none() {
+        builder = builder.header("Content-Type", "application/json");
+    }
+
+    Ok(builder.body(body.to_vec()))
+}
+
+/// 发送请求并检查网络错误
+async fn send_request(builder: reqwest::RequestBuilder, endpoint_name: &str) -> Result<reqwest::Response, AppError> {
+    builder.send().await.map_err(|e| {
+        let error_msg = if e.is_timeout() {
+            format!("连接超时: {}", e)
+        } else if e.is_connect() {
+            format!("连接失败: {}", e)
+        } else if e.is_request() {
+            format!("请求错误: {}", e)
+        } else {
+            format!("网络异常: {}", e)
+        };
+        error!("端点 {} 请求异常: {}", endpoint_name, error_msg);
+        AppError::Proxy(error_msg)
+    })
+}
+
+// ========== API 转发入口 ==========
+
+/// 处理API请求转发（非流式）
 pub async fn forward_request(
     state: &AppState,
     req: &HttpRequest,
     body: bytes::Bytes,
     path: &str,
 ) -> Result<HttpResponse, AppError> {
-    // 匹配对外API
-    let exposed_api = state.match_exposed_api(path)
-        .ok_or_else(|| AppError::NotFound(format!("未找到匹配的对外API: {}", path)))?;
+    let mut ctx = RetryContext::new(state, path)?;
 
-    // 获取池信息
-    let pool = state.get_pool(&exposed_api.pool_id)
-        .ok_or_else(|| AppError::Internal(format!("池不存在: {}", exposed_api.pool_id)))?;
+    for attempt in 0..ctx.max_retries {
+        let endpoint_id = ctx.select_endpoint(state, attempt)
+            .ok_or_else(|| AppError::Proxy("池中没有可用的代理端点".to_string()))?;
 
-    let algorithm = pool.schedule_algorithm.clone();
-    let retry_mode = pool.retry_mode.clone();
-    let retry_count = pool.retry_count.max(1) as usize;
-
-    // 计算最大重试次数
-    let available_count = state.available_endpoint_ids_in_pool(&pool.id).len().max(1);
-    let max_retries = match retry_mode {
-        RetryMode::None => 1,
-        RetryMode::Same => retry_count,
-        RetryMode::Pool => retry_count * available_count,
-    };
-
-    let mut last_error = None;
-    let mut tried_ids: Vec<String> = Vec::new();
-    let mut first_endpoint_id: Option<String> = None;
-
-    for attempt in 0..max_retries {
-        let endpoint_id = if attempt == 0 || retry_mode == RetryMode::Same {
-            // 首次或原地重试：使用调度算法选择端点
-            if retry_mode == RetryMode::Same && first_endpoint_id.is_some() {
-                first_endpoint_id.clone().unwrap()
-            } else {
-                let id = Scheduler::select_endpoint(state, &pool.id, &algorithm)
-                    .ok_or_else(|| AppError::Proxy("池中没有可用的代理端点".to_string()))?;
-                first_endpoint_id = Some(id.clone());
-                id
-            }
-        } else {
-            // 端点重试：排除已尝试的端点
-            match Scheduler::select_next_for_retry(state, &pool.id, &tried_ids) {
-                Some(id) => id,
-                None => break, // 所有端点都已尝试
-            }
-        };
-
-        if retry_mode != RetryMode::Same || attempt == 0 {
-            tried_ids.push(endpoint_id.clone());
-        }
-
-        let endpoint = state
-            .get_endpoint(&endpoint_id)
+        let endpoint = state.get_endpoint(&endpoint_id)
             .ok_or_else(|| AppError::Proxy(format!("端点不存在: {}", endpoint_id)))?;
 
-        debug!(
-            "尝试转发请求到端点 {} ({}) (尝试 {}/{})",
-            endpoint.config.name, endpoint_id, attempt + 1, max_retries
-        );
+        debug!("尝试转发请求到端点 {} ({}) (尝试 {}/{})", endpoint.config.name, endpoint_id, attempt + 1, ctx.max_retries);
 
-        // 计算实际路径（去掉对外API的前缀）
-        let actual_path = path.strip_prefix(&exposed_api.prefix).unwrap_or(path);
-        let target_path = actual_path.to_string();
-        
-        // 根据池的模型模式处理请求体
-        let mapped_body = match map_model_name(&body, &endpoint, &pool, state).await {
+        let actual_path = path.strip_prefix(&ctx.exposed_api.prefix).unwrap_or(path);
+        let mapped_body = match map_model_name(&body, &endpoint, &ctx.pool, state).await {
             Ok(b) => b,
             Err(e) => {
                 warn!("端点 {} 模型名称处理失败: {}", endpoint.config.name, e);
                 state.increment_endpoint_errors(&endpoint_id);
-                last_error = Some(e);
-                if retry_mode == RetryMode::None {
-                    break;
-                }
+                if !ctx.record_error(e) { break; }
                 continue;
             }
         };
 
-        match forward_to_endpoint(state, req, &mapped_body, &endpoint, &target_path, &exposed_api.api_type).await {
-            Ok(response) => {
-                return Ok(response);
-            }
+        match forward_to_endpoint(state, req, &mapped_body, &endpoint, actual_path).await {
+            Ok(response) => return Ok(response),
             Err(e) => {
                 warn!("端点 {} 请求失败: {}", endpoint.config.name, e);
                 state.increment_endpoint_errors(&endpoint_id);
-                last_error = Some(e);
-
-                // 无重试模式直接返回
-                if retry_mode == RetryMode::None {
-                    break;
-                }
+                if !ctx.record_error(e) { break; }
             }
         }
     }
 
-    if let Some(e) = &last_error {
-        warn!("端点池所有接口均不可用，最后错误: {}", e);
-    }
-    Err(AppError::Proxy("端点池所有接口均不可用，请检查后重试。".to_string()))
+    Err(ctx.into_final_error())
 }
 
 /// 处理流式响应转发
@@ -306,128 +382,37 @@ pub async fn forward_stream_request(
     body: bytes::Bytes,
     path: &str,
 ) -> Result<HttpResponse, AppError> {
-    // 匹配对外API
-    let exposed_api = state.match_exposed_api(path)
-        .ok_or_else(|| AppError::NotFound(format!("未找到匹配的对外API: {}", path)))?;
+    let mut ctx = RetryContext::new(state.get_ref(), path)?;
 
-    // 获取池信息
-    let pool = state.get_pool(&exposed_api.pool_id)
-        .ok_or_else(|| AppError::Internal(format!("池不存在: {}", exposed_api.pool_id)))?;
+    for attempt in 0..ctx.max_retries {
+        let endpoint_id = ctx.select_endpoint(state.get_ref(), attempt)
+            .ok_or_else(|| AppError::Proxy("池中没有可用的代理端点".to_string()))?;
 
-    let algorithm = pool.schedule_algorithm.clone();
-    let retry_mode = pool.retry_mode.clone();
-    let retry_count = pool.retry_count.max(1) as usize;
-
-    // 计算最大重试次数
-    let available_count = state.available_endpoint_ids_in_pool(&pool.id).len().max(1);
-    let max_retries = match retry_mode {
-        RetryMode::None => 1,
-        RetryMode::Same => retry_count,
-        RetryMode::Pool => retry_count * available_count,
-    };
-
-    let mut last_error = None;
-    let mut tried_ids: Vec<String> = Vec::new();
-    let mut first_endpoint_id: Option<String> = None;
-
-    for attempt in 0..max_retries {
-        let endpoint_id = if attempt == 0 || retry_mode == RetryMode::Same {
-            if retry_mode == RetryMode::Same && first_endpoint_id.is_some() {
-                first_endpoint_id.clone().unwrap()
-            } else {
-                let id = Scheduler::select_endpoint(state.get_ref(), &pool.id, &algorithm)
-                    .ok_or_else(|| AppError::Proxy("池中没有可用的代理端点".to_string()))?;
-                first_endpoint_id = Some(id.clone());
-                id
-            }
-        } else {
-            match Scheduler::select_next_for_retry(state.get_ref(), &pool.id, &tried_ids) {
-                Some(id) => id,
-                None => break,
-            }
-        };
-
-        if retry_mode != RetryMode::Same || attempt == 0 {
-            tried_ids.push(endpoint_id.clone());
-        }
-
-        let endpoint = state
-            .get_endpoint(&endpoint_id)
+        let endpoint = state.get_endpoint(&endpoint_id)
             .ok_or_else(|| AppError::Proxy(format!("端点不存在: {}", endpoint_id)))?;
 
-        // 计算实际路径
-        let actual_path = path.strip_prefix(&exposed_api.prefix).unwrap_or(path);
+        let actual_path = path.strip_prefix(&ctx.exposed_api.prefix).unwrap_or(path);
         let target_path = actual_path.to_string();
-        let target_url = build_target_url(&endpoint.config.url, &target_path, &exposed_api.api_type);
+        let target_url = build_target_url(&endpoint.config.url, &target_path);
         
-        // 根据池的模型模式处理请求体
-        let mapped_body = match map_model_name(&body, &endpoint, &pool, state.get_ref()).await {
+        let mapped_body = match map_model_name(&body, &endpoint, &ctx.pool, state.get_ref()).await {
             Ok(b) => b,
             Err(e) => {
                 warn!("端点 {} 模型名称处理失败: {}", endpoint.config.name, e);
                 state.increment_endpoint_errors(&endpoint_id);
-                last_error = Some(e);
-                if retry_mode == RetryMode::None {
-                    break;
-                }
+                if !ctx.record_error(e) { break; }
                 continue;
             }
         };
 
-        debug!("流式转发到: {} (尝试 {}/{})", target_url, attempt + 1, max_retries);
+        debug!("流式转发到: {} (尝试 {}/{})", target_url, attempt + 1, ctx.max_retries);
 
-        let mut request_builder = state.http_client.request(
-            reqwest::Method::from_bytes(req.method().as_str().as_bytes())
-                .map_err(|e| AppError::Proxy(format!("无效的HTTP方法: {}", e)))?,
-            &target_url,
-        );
-
-        // 复制请求头（跳过认证头，后面会使用端点的 API Key）
-        for (key, value) in req.headers() {
-            let key_str = key.as_str().to_lowercase();
-            if key_str != "host" && key_str != "content-length" && key_str != "authorization" && key_str != "x-api-key" {
-                if let Ok(v) = value.to_str() {
-                    request_builder = request_builder.header(key.as_str(), v);
-                }
-            }
-        }
-
-        // 设置认证头
-        match endpoint.config.api_type {
-            ApiType::OpenAI | ApiType::OpenAIResponses => {
-                request_builder = request_builder.header(
-                    "Authorization",
-                    format!("Bearer {}", endpoint.config.api_key),
-                );
-            }
-            ApiType::Anthropic => {
-                request_builder = request_builder.header("x-api-key", &endpoint.config.api_key);
-                request_builder = request_builder.header("anthropic-version", "2023-06-01");
-            }
-        }
-
-        request_builder = request_builder.body(mapped_body.to_vec());
-
-        // 发送请求，捕获网络异常（超时、连接拒绝、DNS失败等）
-        let response = match request_builder.send().await {
-            Ok(resp) => resp,
+        let request_builder = build_upstream_request(state.get_ref(), req, &endpoint, &target_url, &mapped_body)?;
+        let response = match send_request(request_builder, &endpoint.config.name).await {
+            Ok(r) => r,
             Err(e) => {
-                let error_msg = if e.is_timeout() {
-                    format!("连接超时: {}", e)
-                } else if e.is_connect() {
-                    format!("连接失败: {}", e)
-                } else if e.is_request() {
-                    format!("请求错误: {}", e)
-                } else {
-                    format!("网络异常: {}", e)
-                };
-                warn!("端点 {} 请求异常: {}", endpoint.config.name, error_msg);
                 state.increment_endpoint_errors(&endpoint_id);
-                last_error = Some(AppError::Proxy(error_msg));
-
-                if retry_mode == RetryMode::None {
-                    break;
-                }
+                if !ctx.record_error(e) { break; }
                 continue;
             }
         };
@@ -437,51 +422,36 @@ pub async fn forward_stream_request(
             let error_body = response.text().await.unwrap_or_default();
             warn!("端点 {} 返回错误状态 {}: {}", endpoint.config.name, resp_status, error_body);
             state.increment_endpoint_errors(&endpoint_id);
-            last_error = Some(AppError::Proxy(format!(
-                "上游返回状态 {}: {}",
-                resp_status, error_body
-            )));
-
-            if retry_mode == RetryMode::None {
-                break;
-            }
+            let e = AppError::Proxy(format!("上游返回状态 {}: {}", resp_status, error_body));
+            if !ctx.record_error(e) { break; }
             continue;
         }
 
-        // 流式响应：只读取第一个 chunk 检查错误，后续 chunk 直接转发
         let mut stream = response.bytes_stream();
 
-        // 读取第一个 chunk
         let first_chunk = match stream.next().await {
             Some(Ok(chunk)) => chunk,
             Some(Err(e)) => {
                 warn!("端点 {} 读取响应流失败: {}", endpoint.config.name, e);
                 state.increment_endpoint_errors(&endpoint_id);
-                last_error = Some(AppError::Proxy(format!("读取响应流失败: {}", e)));
-                if retry_mode == RetryMode::None {
-                    break;
-                }
+                let e = AppError::Proxy(format!("读取响应流失败: {}", e));
+                if !ctx.record_error(e) { break; }
                 continue;
             }
             None => {
                 warn!("端点 {} 返回空响应", endpoint.config.name);
                 state.increment_endpoint_errors(&endpoint_id);
-                last_error = Some(AppError::Proxy("上游返回空响应".to_string()));
-                if retry_mode == RetryMode::None {
-                    break;
-                }
+                let e = AppError::Proxy("上游返回空响应".to_string());
+                if !ctx.record_error(e) { break; }
                 continue;
             }
         };
 
-        // 检查第一个 chunk 中是否包含错误
         if let Some((error_code, error_msg)) = detect_response_error(&first_chunk) {
             warn!("端点 {} 响应中包含错误 [{}]: {}", endpoint.config.name, error_code, error_msg);
             state.increment_endpoint_errors(&endpoint_id);
-            last_error = Some(AppError::Proxy(format!("上游错误 [{}]: {}", error_code, error_msg)));
-            if retry_mode == RetryMode::None {
-                break;
-            }
+            let e = AppError::Proxy(format!("上游错误 [{}]: {}", error_code, error_msg));
+            if !ctx.record_error(e) { break; }
             continue;
         }
 
@@ -528,112 +498,22 @@ pub async fn forward_stream_request(
         return Ok(body_stream);
     }
 
-    // 所有重试都失败
-    if let Some(e) = &last_error {
-        warn!("端点池所有接口均不可用，最后错误: {}", e);
-    }
-    Err(AppError::Proxy("端点池所有接口均不可用，请检查后重试。".to_string()))
+    Err(ctx.into_final_error())
 }
 
-/// 转发请求到指定端点
-/// 根据 API 类型和 base_url 构建完整的目标 URL
-fn build_target_url(base_url: &str, path: &str, api_type: &ApiType) -> String {
-    let base = base_url.trim_end_matches('/');
-    let path = path.trim_start_matches('/');
-    
-    // 如果 base_url 已经包含 /v1 前缀，且 path 也以 v1/ 开头，则去掉 path 中的 v1/
-    if (base.ends_with("/v1") || base.ends_with("/v1/")) && (path.starts_with("v1/") || path == "v1") {
-        let stripped = path.strip_prefix("v1/").or_else(|| path.strip_prefix("v1")).unwrap_or("");
-        return format!("{}/{}", base, stripped);
-    }
-    
-    // 如果 path 已经包含 v1/ 前缀，直接拼接
-    if path.starts_with("v1/") || path == "v1" {
-        return format!("{}/{}", base, path);
-    }
-    
-    // 如果 base_url 已经包含 /v1 等路径前缀，则直接使用
-    // 否则根据 API 类型自动补全
-    let full_base = if base.ends_with("/v1") || base.ends_with("/v1/") {
-        base.to_string()
-    } else {
-        match api_type {
-            ApiType::OpenAI | ApiType::OpenAIResponses => {
-                format!("{}/v1", base)
-            }
-            ApiType::Anthropic => {
-                format!("{}/v1", base)
-            }
-        }
-    };
-    
-    format!("{}/{}", full_base, path)
-}
-
+/// 转发请求到指定端点（非流式）
 async fn forward_to_endpoint(
     state: &AppState,
     req: &HttpRequest,
     body: &bytes::Bytes,
     endpoint: &EndpointState,
     path: &str,
-    api_type: &ApiType,
 ) -> Result<HttpResponse, AppError> {
-    let target_url = build_target_url(&endpoint.config.url, path, api_type);
+    let target_url = build_target_url(&endpoint.config.url, path);
     debug!("转发到: {}", target_url);
 
-    let mut request_builder = state.http_client.request(
-        reqwest::Method::from_bytes(req.method().as_str().as_bytes())
-            .map_err(|e| AppError::Proxy(format!("无效的HTTP方法: {}", e)))?,
-        &target_url,
-    );
-
-    // 复制请求头（跳过认证头，后面会使用端点的 API Key）
-    for (key, value) in req.headers() {
-        let key_str = key.as_str().to_lowercase();
-        if key_str != "host" && key_str != "content-length" && key_str != "authorization" && key_str != "x-api-key" {
-            if let Ok(v) = value.to_str() {
-                request_builder = request_builder.header(key.as_str(), v);
-            }
-        }
-    }
-
-    // 设置认证头
-    match endpoint.config.api_type {
-        ApiType::OpenAI | ApiType::OpenAIResponses => {
-            request_builder = request_builder.header(
-                "Authorization",
-                format!("Bearer {}", endpoint.config.api_key),
-            );
-        }
-        ApiType::Anthropic => {
-            request_builder = request_builder.header("x-api-key", &endpoint.config.api_key);
-            request_builder = request_builder.header("anthropic-version", "2023-06-01");
-        }
-    }
-
-    if req.headers().get("content-type").is_none() {
-        request_builder = request_builder.header("Content-Type", "application/json");
-    }
-
-    request_builder = request_builder.body(body.to_vec());
-
-    // 发送请求，捕获网络异常（超时、连接拒绝、DNS失败等）
-    let response = match request_builder.send().await {
-        Ok(resp) => resp,
-        Err(e) => {
-            let error_msg = if e.is_timeout() {
-                format!("连接超时: {}", e)
-            } else if e.is_connect() {
-                format!("连接失败: {}", e)
-            } else if e.is_request() {
-                format!("请求错误: {}", e)
-            } else {
-                format!("网络异常: {}", e)
-            };
-            error!("端点 {} 请求异常: {}", endpoint.config.name, error_msg);
-            return Err(AppError::Proxy(error_msg));
-        }
-    };
+    let request_builder = build_upstream_request(state, req, endpoint, &target_url, body)?;
+    let response = send_request(request_builder, &endpoint.config.name).await?;
 
     let status = response.status();
     let headers = response.headers().clone();
@@ -646,13 +526,11 @@ async fn forward_to_endpoint(
 
     let response_body = response.bytes().await.map_err(|e| AppError::Proxy(format!("读取响应失败: {}", e)))?;
 
-    // 检查响应体中是否包含错误（LLM API 可能返回 200 但 body 中有错误）
     if let Some((error_code, error_msg)) = detect_response_error(&response_body) {
         error!("端点 {} 响应中包含错误 [{}]: {}", endpoint.config.name, error_code, error_msg);
         return Err(AppError::Proxy(format!("上游错误 [{}]: {}", error_code, error_msg)));
     }
 
-    // 解析token使用量
     let tokens_used = parse_token_usage(&response_body, &endpoint.config.api_type);
     if tokens_used > 0 {
         state.update_endpoint_tokens(&endpoint.config.id, tokens_used);
