@@ -671,9 +671,6 @@ function addEndpointToPool(poolId) {
     document.getElementById('ep-id').value = '';
     document.getElementById('ep-enabled').checked = true;
     
-    // 设置默认重置方式为每日重置
-    document.getElementById('ep-reset').value = 'daily';
-    
     // 清空完整路径显示
     const fullUrlDiv = document.getElementById('ep-full-url');
     if (fullUrlDiv) {
@@ -695,6 +692,12 @@ function addEndpointToPool(poolId) {
     // 清空模型映射并更新显示
     loadModelMappings([]);
     updateModelMappingsVisibility();
+    
+    // 触发限额变化事件，控制重置方式（限额为空时自动设为手动重置）
+    const epLimitInput = document.getElementById('ep-limit');
+    if (epLimitInput) {
+        epLimitInput.dispatchEvent(new Event('input'));
+    }
     
     showModal('endpoint-modal');
 }
@@ -1897,7 +1900,7 @@ function renderPoolsList() {
                     </div>
                     <div style="display: flex; gap: 6px;">
                         <button class="btn btn-small" onclick="editEndpoint('${escapeAttr(ep.id)}', true)" style="font-size: 0.6875rem;">编辑</button>
-                        <button class="btn btn-small btn-warning" onclick="removeEndpointFromPool('${escapeAttr(ep.id)}')" style="font-size: 0.6875rem;">从池中移除</button>
+                        <button class="btn btn-small btn-warning" onclick="removeEndpointFromPool('${escapeAttr(ep.id)}', '${escapeAttr(pool.id)}')" style="font-size: 0.6875rem;">从池中移除</button>
                     </div>
                 </div>
             `;
