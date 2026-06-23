@@ -378,7 +378,7 @@ pub async fn forward_request(
             }
         };
 
-        match forward_to_endpoint(state, req, &mapped_body, &endpoint, actual_path).await {
+        match forward_to_endpoint(state, req, &mapped_body, &endpoint, actual_path, &ctx.exposed_api.api_type).await {
             Ok(response) => return Ok(response),
             Err(e) => {
                 warn!("端点 {} 请求失败: {}", endpoint.config.name, e);
@@ -408,7 +408,7 @@ pub async fn forward_stream_request(
             .ok_or_else(|| AppError::Proxy(format!("端点不存在: {}", endpoint_id)))?;
 
         let actual_path = path.strip_prefix(&ctx.exposed_api.prefix).unwrap_or(path);
-        let target_path = actual_path.to_string();
+        let target_path = crate::converter::convert_path(actual_path, &ctx.exposed_api.api_type, &endpoint.config.api_type);
         let target_url = build_target_url(&endpoint.config.url, &target_path);
         
         let mapped_body = match map_model_name(&body, &endpoint, &ctx.pool, state.get_ref()).await {
@@ -421,9 +421,22 @@ pub async fn forward_stream_request(
             }
         };
 
+        // 转换请求体
+        let converted_body = if std::mem::discriminant(&ctx.exposed_api.api_type) != std::mem::discriminant(&endpoint.config.api_type) {
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&mapped_body) {
+                let converted = crate::converter::convert_request(&json, &ctx.exposed_api.api_type, &endpoint.config.api_type);
+                debug!("流式请求体已从 {:?} 转换为 {:?}", ctx.exposed_api.api_type, endpoint.config.api_type);
+                bytes::Bytes::from(serde_json::to_vec(&converted).unwrap_or(mapped_body.to_vec()))
+            } else {
+                mapped_body
+            }
+        } else {
+            mapped_body
+        };
+
         debug!("流式转发到: {} (尝试 {}/{})", target_url, attempt + 1, ctx.max_retries);
 
-        let request_builder = build_upstream_request(state.get_ref(), req, &endpoint, &target_url, &mapped_body)?;
+        let request_builder = build_upstream_request(state.get_ref(), req, &endpoint, &target_url, &converted_body)?;
         let response = match send_request(request_builder, &endpoint.config.name).await {
             Ok(r) => r,
             Err(e) => {
@@ -540,11 +553,26 @@ async fn forward_to_endpoint(
     body: &bytes::Bytes,
     endpoint: &EndpointState,
     path: &str,
+    client_api_type: &ApiType,
 ) -> Result<HttpResponse, AppError> {
-    let target_url = build_target_url(&endpoint.config.url, path);
-    debug!("转发到: {}", target_url);
+    let target_path = crate::converter::convert_path(path, client_api_type, &endpoint.config.api_type);
+    let target_url = build_target_url(&endpoint.config.url, &target_path);
+    debug!("转发到: {} (客户端格式: {:?}, 端点格式: {:?})", target_url, client_api_type, endpoint.config.api_type);
 
-    let request_builder = build_upstream_request(state, req, endpoint, &target_url, body)?;
+    // 转换请求体
+    let converted_body = if std::mem::discriminant(client_api_type) != std::mem::discriminant(&endpoint.config.api_type) {
+        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(body) {
+            let converted = crate::converter::convert_request(&json, client_api_type, &endpoint.config.api_type);
+            debug!("请求体已从 {:?} 转换为 {:?}", client_api_type, endpoint.config.api_type);
+            bytes::Bytes::from(serde_json::to_vec(&converted).unwrap_or(body.to_vec()))
+        } else {
+            body.clone()
+        }
+    } else {
+        body.clone()
+    };
+
+    let request_builder = build_upstream_request(state, req, endpoint, &target_url, &converted_body)?;
     let response = send_request(request_builder, &endpoint.config.name).await?;
 
     let status = response.status();
@@ -554,7 +582,6 @@ async fn forward_to_endpoint(
         let error_body = response.text().await.unwrap_or_default();
         error!("端点 {} 返回错误状态 {}: {}", endpoint.config.name, status, error_body);
         if status.is_client_error() && status.as_u16() != 429 {
-            // 4xx 除 429 外为客户端请求问题，重试其他端点也会得到相同错误，直接返回
             return Err(AppError::UpstreamError(format!("上游返回状态 {}: {}", status, error_body)));
         }
         return Err(AppError::Proxy(format!("上游返回状态 {}: {}", status, error_body)));
@@ -573,6 +600,19 @@ async fn forward_to_endpoint(
         debug!("端点 {} 消耗 {} tokens", endpoint.config.name, tokens_used);
     }
 
+    // 转换响应体
+    let final_body = if std::mem::discriminant(client_api_type) != std::mem::discriminant(&endpoint.config.api_type) {
+        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&response_body) {
+            let converted = crate::converter::convert_response(&json, &endpoint.config.api_type, client_api_type);
+            debug!("响应体已从 {:?} 转换为 {:?}", endpoint.config.api_type, client_api_type);
+            bytes::Bytes::from(serde_json::to_vec(&converted).unwrap_or(response_body.to_vec()))
+        } else {
+            response_body
+        }
+    } else {
+        response_body
+    };
+
     let mut response_builder = HttpResponse::build(
         actix_web::http::StatusCode::from_u16(status.as_u16())
             .unwrap_or(actix_web::http::StatusCode::OK),
@@ -584,7 +624,7 @@ async fn forward_to_endpoint(
         }
     }
 
-    Ok(response_builder.body(response_body))
+    Ok(response_builder.body(final_body))
 }
 
 /// 解析响应中的token使用量

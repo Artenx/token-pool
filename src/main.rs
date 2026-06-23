@@ -1,6 +1,7 @@
 mod admin;
 mod auth;
 mod config;
+mod converter;
 mod error;
 mod models;
 mod proxy;
