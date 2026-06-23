@@ -190,20 +190,20 @@ nav {
     border: none;
     background: none;
     cursor: pointer;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--text-secondary);
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: rgba(232, 232, 237, 0.7);
     border-bottom: 2px solid transparent;
     transition: all 0.15s ease;
-    letter-spacing: 0.01em;
+    letter-spacing: 0.02em;
 }
 
 .nav-btn:hover {
-    color: var(--text-primary);
+    color: #ffffff;
 }
 
 .nav-btn.active {
-    color: var(--accent);
+    color: #ffffff;
     border-bottom-color: var(--accent);
 }
 
