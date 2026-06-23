@@ -65,42 +65,78 @@
             <!-- 仪表盘 -->
             <div id="tab-dashboard" class="tab-content active">
                 <div class="stats-grid">
-                    <div class="stat-card">
-                        <h3>端点总数</h3>
-                        <div class="stat-value" id="stat-total">0</div>
-                        <div class="stat-sub" id="stat-active-sub">活跃: 0</div>
-                    </div>
-                    <div class="stat-card">
-                        <h3>已用 Token</h3>
-                        <div class="stat-value" id="stat-used">0</div>
-                        <div class="stat-sub" id="stat-limit-sub">限额: 0</div>
-                    </div>
-                    <div class="stat-card">
-                        <h3>Token 使用率</h3>
-                        <div class="stat-value" id="stat-usage-rate">0%</div>
-                        <div class="progress-bar" style="height: 4px; margin-top: 8px;">
-                            <div class="progress-fill" id="stat-usage-bar" style="width: 0%"></div>
+                    <div class="stat-card stat-card-accent">
+                        <div class="stat-icon">⚡</div>
+                        <div class="stat-info">
+                            <h3>端点总数</h3>
+                            <div class="stat-value" id="stat-total">0</div>
+                            <div class="stat-sub" id="stat-active-sub">活跃: 0</div>
                         </div>
                     </div>
-                    <div class="stat-card">
-                        <h3>总请求数</h3>
-                        <div class="stat-value" id="stat-requests">0</div>
-                        <div class="stat-sub" id="stat-errors-sub">错误: 0</div>
+                    <div class="stat-card stat-card-accent">
+                        <div class="stat-icon">📊</div>
+                        <div class="stat-info">
+                            <h3>已用 Token</h3>
+                            <div class="stat-value" id="stat-used">0</div>
+                            <div class="stat-sub" id="stat-limit-sub">限额: 0</div>
+                        </div>
+                    </div>
+                    <div class="stat-card stat-card-accent">
+                        <div class="stat-icon">📈</div>
+                        <div class="stat-info">
+                            <h3>Token 使用率</h3>
+                            <div class="stat-value" id="stat-usage-rate">0%</div>
+                            <div class="progress-bar" style="height: 4px; margin-top: 8px;">
+                                <div class="progress-fill" id="stat-usage-bar" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="stat-card stat-card-accent">
+                        <div class="stat-icon">🔄</div>
+                        <div class="stat-info">
+                            <h3>总请求数</h3>
+                            <div class="stat-value" id="stat-requests">0</div>
+                            <div class="stat-sub" id="stat-errors-sub">错误: 0</div>
+                        </div>
                     </div>
                 </div>
 
                 <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr);">
-                    <div class="stat-card">
-                        <h3>端点池</h3>
-                        <div class="stat-value" id="stat-pools">0</div>
+                    <div class="stat-card stat-card-accent">
+                        <div class="stat-icon">🔄</div>
+                        <div class="stat-info">
+                            <h3>端点池</h3>
+                            <div class="stat-value" id="stat-pools">0</div>
+                        </div>
                     </div>
-                    <div class="stat-card">
-                        <h3>API 接口</h3>
-                        <div class="stat-value" id="stat-apis">0</div>
+                    <div class="stat-card stat-card-accent">
+                        <div class="stat-icon">🔗</div>
+                        <div class="stat-info">
+                            <h3>API 接口</h3>
+                            <div class="stat-value" id="stat-apis">0</div>
+                        </div>
                     </div>
-                    <div class="stat-card">
-                        <h3>总错误数</h3>
-                        <div class="stat-value" id="stat-total-errors">0</div>
+                    <div class="stat-card stat-card-accent">
+                        <div class="stat-icon">⚠️</div>
+                        <div class="stat-info">
+                            <h3>总错误数</h3>
+                            <div class="stat-value" id="stat-total-errors">0</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="chart-grid">
+                    <div class="chart-card">
+                        <div class="chart-header">端点状态分布</div>
+                        <div id="endpoint-status-chart"></div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-header">Token 使用量</div>
+                        <div id="token-usage-chart"></div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-header">请求量统计</div>
+                        <div id="request-chart"></div>
                     </div>
                 </div>
 

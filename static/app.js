@@ -481,6 +481,11 @@ async function loadDashboard() {
         renderApisOverview();
         renderEndpointsOverview();
 
+        // 渲染图表
+        renderEndpointStatusChart();
+        renderTokenUsageChart();
+        renderRequestChart();
+
         // 更新端点列表（用于端点页面）
         renderEndpointsList();
         
@@ -604,6 +609,105 @@ function renderEndpointsOverview() {
             </div>
         `;
     }).join('');
+}
+
+// 渲染端点状态分布图表
+function renderEndpointStatusChart() {
+    const container = document.getElementById('endpoint-status-chart');
+    if (!container) return;
+
+    const endpoints = currentEndpoints || [];
+    const active = endpoints.filter(ep => ep.enabled && ep.error_count === 0).length;
+    const error = endpoints.filter(ep => ep.enabled && ep.error_count > 0).length;
+    const disabled = endpoints.filter(ep => !ep.enabled).length;
+    const total = endpoints.length;
+
+    if (total === 0) {
+        container.innerHTML = '<div class="chart-empty">暂无端点数据</div>';
+        return;
+    }
+
+    const max = Math.max(active, error, disabled, 1);
+    const items = [
+        { label: '正常', count: active, color: 'green' },
+        { label: '异常', count: error, color: 'red' },
+        { label: '禁用', count: disabled, color: 'gray' },
+    ];
+
+    container.innerHTML = `<div class="chart-bar-group">
+        ${items.map(item => `
+            <div class="chart-bar-row">
+                <div class="chart-bar-label">${item.label}</div>
+                <div class="chart-bar-track">
+                    <div class="chart-bar-fill ${item.color}" style="width: ${(item.count / max * 100).toFixed(1)}%"></div>
+                </div>
+                <div class="chart-bar-value">${item.count}</div>
+            </div>
+        `).join('')}
+    </div>`;
+}
+
+// 渲染 Token 使用量图表
+function renderTokenUsageChart() {
+    const container = document.getElementById('token-usage-chart');
+    if (!container) return;
+
+    const endpoints = (currentEndpoints || []).filter(ep => ep.token_limit > 0 && ep.token_limit < 999999999000 && ep.enabled);
+
+    if (endpoints.length === 0) {
+        container.innerHTML = '<div class="chart-empty">暂无有限额端点数据</div>';
+        return;
+    }
+
+    const max = Math.max(...endpoints.map(ep => ep.token_limit), 1);
+    const colors = ['blue', 'purple', 'cyan', 'orange', 'green', 'yellow'];
+
+    container.innerHTML = `<div class="chart-bar-group">
+        ${endpoints.map((ep, i) => {
+            const percent = (ep.tokens_used / ep.token_limit * 100).toFixed(1);
+            const barColor = percent >= 80 ? 'red' : percent >= 50 ? 'yellow' : colors[i % colors.length];
+            return `
+                <div class="chart-bar-row">
+                    <div class="chart-bar-label">${escapeHtml(ep.name)}</div>
+                    <div class="chart-bar-track">
+                        <div class="chart-bar-fill ${barColor}" style="width: ${Math.min(percent, 100)}%"></div>
+                    </div>
+                    <div class="chart-bar-value">${formatNumber(ep.tokens_used)} / ${formatLimit(ep.token_limit)}</div>
+                </div>
+            `;
+        }).join('')}
+    </div>`;
+}
+
+// 渲染请求量统计图表
+function renderRequestChart() {
+    const container = document.getElementById('request-chart');
+    if (!container) return;
+
+    const endpoints = (currentEndpoints || []).filter(ep => ep.enabled && ep.total_requests > 0);
+
+    if (endpoints.length === 0) {
+        container.innerHTML = '<div class="chart-empty">暂无请求数据</div>';
+        return;
+    }
+
+    const max = Math.max(...endpoints.map(ep => ep.total_requests), 1);
+    const colors = ['blue', 'green', 'purple', 'cyan', 'orange', 'yellow'];
+
+    container.innerHTML = `<div class="chart-bar-group">
+        ${endpoints.map((ep, i) => {
+            const percent = (ep.total_requests / max * 100).toFixed(1);
+            return `
+                <div class="chart-bar-row">
+                    <div class="chart-bar-label">${escapeHtml(ep.name)}</div>
+                    <div class="chart-bar-track">
+                        <div class="chart-bar-fill ${colors[i % colors.length]}" style="width: ${percent}%"></div>
+                    </div>
+                    <div class="chart-bar-value">${formatNumber(ep.total_requests)}</div>
+                </div>
+            `;
+        }).join('')}
+    </div>`;
 }
 
 // 渲染端点列表
