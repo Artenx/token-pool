@@ -654,8 +654,11 @@ async fn forward_to_endpoint(
         debug!("端点 {} 消耗 {} tokens", endpoint.config.name, tokens_used);
     }
 
-    // 转换响应体
-    let final_body = if std::mem::discriminant(client_api_type) != std::mem::discriminant(&endpoint.config.api_type) {
+    // 转换响应体（仅对 chat/completions 和 responses/messages 路径转换，/models 等特殊路径不转换）
+    let is_api_request = path == "chat/completions" || path.starts_with("chat/completions?")
+        || path == "responses" || path.starts_with("responses?")
+        || path == "messages" || path.starts_with("messages?");
+    let final_body = if is_api_request && std::mem::discriminant(client_api_type) != std::mem::discriminant(&endpoint.config.api_type) {
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&response_body) {
             let converted = crate::converter::convert_response(&json, &endpoint.config.api_type, client_api_type);
             debug!("响应体已从 {:?} 转换为 {:?}", endpoint.config.api_type, client_api_type);

@@ -521,9 +521,9 @@ pub fn convert_path(path: &str, from: &crate::models::ApiType, to: &crate::model
         return path.to_string();
     }
 
-    // 特殊路径不转换（如 /models, /models/xxx）
-    let path_lower = path.to_lowercase();
-    if path_lower == "models" || path_lower.starts_with("models/") {
+    // 特殊路径不转换（如 /models, /models/xxx, models, models/xxx）
+    let path_stripped = path.trim_start_matches('/');
+    if path_stripped == "models" || path_stripped.starts_with("models/") {
         return path.to_string();
     }
 
