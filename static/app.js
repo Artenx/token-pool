@@ -617,15 +617,15 @@ function renderEndpointsOverview() {
                         <span>${formatNumber(ep.tokens_used)} / ${formatLimit(ep.token_limit)}</span>
                     </div>
                     <div class="endpoint-detail">
-                        <label>请求限额</label>
+                        <label>请求次数限额</label>
                         <span>${ep.request_limit > 0 ? formatNumber(ep.request_limit) : '无上限'}</span>
                     </div>
                     <div class="endpoint-detail">
-                        <label>已请求</label>
+                        <label>已请求次数</label>
                         <span>${formatNumber(ep.requests_used)}</span>
                     </div>
                     <div class="endpoint-detail">
-                        <label>请求数</label>
+                        <label>总请求数</label>
                         <span>${formatNumber(ep.total_requests)}</span>
                     </div>
                     <div class="endpoint-detail">
@@ -773,19 +773,19 @@ function renderEndpointsList() {
                         <span>${ep.api_type.toUpperCase()}</span>
                     </div>
                     <div class="endpoint-detail">
-                        <label>已使用</label>
+                        <label>已使用Token</label>
                         <span>${formatNumber(ep.tokens_used)}</span>
                     </div>
                     <div class="endpoint-detail">
-                        <label>限额</label>
+                        <label>Token限额</label>
                         <span>${formatLimit(ep.token_limit)}</span>
                     </div>
                     <div class="endpoint-detail">
-                        <label>请求限额</label>
+                        <label>请求次数限额</label>
                         <span>${ep.request_limit > 0 ? formatNumber(ep.request_limit) : '无上限'}</span>
                     </div>
                     <div class="endpoint-detail">
-                        <label>已请求</label>
+                        <label>已请求次数</label>
                         <span>${formatNumber(ep.requests_used)}</span>
                     </div>
                 </div>
@@ -798,6 +798,7 @@ function renderEndpointsList() {
                         ${ep.enabled ? '禁用' : '启用'}
                     </button>
                     <button class="btn btn-small btn-outline" onclick="resetEndpoint('${escapeAttr(ep.id)}')">重置Token</button>
+                    <button class="btn btn-small btn-outline" onclick="resetEndpointRequests('${escapeAttr(ep.id)}')">重置请求</button>
                     <button class="btn btn-small" onclick="browseEndpointModels('${escapeAttr(ep.id)}', '${escapeAttr(ep.api_type)}')">浏览模型</button>
                     <button class="btn btn-small btn-danger" onclick="deleteEndpoint('${escapeAttr(ep.id)}')">删除</button>
                 </div>
@@ -1295,6 +1296,26 @@ async function resetEndpoint(id) {
         const res = await fetch(`${API_BASE}/endpoints/${id}/reset`, { method: 'POST' });
         if (res.ok) {
             showToast('Token已重置', 'success');
+            // 刷新当前页面数据
+            const activeTab = document.querySelector('.nav-btn.active');
+            if (activeTab) {
+                switchTab(activeTab.dataset.tab);
+            } else {
+                loadDashboard();
+            }
+        }
+    } catch (e) {
+        showToast('操作失败', 'error');
+    }
+}
+
+// 重置端点请求次数
+async function resetEndpointRequests(id) {
+    if (!confirm('确定要重置此端点的请求次数吗？')) return;
+    try {
+        const res = await fetch(`${API_BASE}/endpoints/${id}/reset-requests`, { method: 'POST' });
+        if (res.ok) {
+            showToast('请求次数已重置', 'success');
             // 刷新当前页面数据
             const activeTab = document.querySelector('.nav-btn.active');
             if (activeTab) {

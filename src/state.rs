@@ -233,6 +233,16 @@ impl AppState {
         Ok(())
     }
 
+    /// 重置指定端点的请求次数（保留token使用量）
+    pub async fn reset_endpoint_requests(&self, id: &str) -> anyhow::Result<()> {
+        let mut endpoints = self.endpoints.write();
+        let ep = endpoints.get_mut(id).ok_or_else(|| anyhow::anyhow!("端点不存在: {}", id))?;
+        ep.reset_requests();
+        self.mark_dirty();
+        info!("已重置端点 {} 的请求次数", ep.config.name);
+        Ok(())
+    }
+
     /// 重置所有端点的token使用量
     pub fn reset_all_tokens(&self) {
         let mut endpoints = self.endpoints.write();

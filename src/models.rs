@@ -264,6 +264,13 @@ impl EndpointState {
         }
     }
 
+    /// 仅重置请求次数（保留token使用量）
+    pub fn reset_requests(&mut self) {
+        self.requests_used = 0;
+        self.request_history.clear();
+        self.last_reset = Utc::now();
+    }
+
     pub fn reset(&mut self) {
         self.tokens_used = 0;
         self.last_reset = Utc::now();

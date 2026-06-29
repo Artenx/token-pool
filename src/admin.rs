@@ -146,6 +146,24 @@ pub async fn reset_endpoint(
     })))
 }
 
+/// 重置端点请求次数
+pub async fn reset_endpoint_requests(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<String>,
+) -> Result<HttpResponse, AppError> {
+    check_admin_auth(&req)?;
+    let id = path.into_inner();
+    state
+        .reset_endpoint_requests(&id)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "message": "请求次数已重置"
+    })))
+}
+
 /// 重置所有端点token使用量
 pub async fn reset_all_endpoints(
     state: web::Data<AppState>,

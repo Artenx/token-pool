@@ -161,6 +161,7 @@ async fn main() -> std::io::Result<()> {
             .route("/admin/api/endpoints/{id}", web::delete().to(admin::delete_endpoint))
             .route("/admin/api/endpoints/{id}/toggle", web::post().to(admin::toggle_endpoint))
             .route("/admin/api/endpoints/{id}/reset", web::post().to(admin::reset_endpoint))
+            .route("/admin/api/endpoints/{id}/reset-requests", web::post().to(admin::reset_endpoint_requests))
             .route("/admin/api/endpoints/reset-all", web::post().to(admin::reset_all_endpoints))
             // 池管理
             .route("/admin/api/pools", web::get().to(admin::list_pools))
