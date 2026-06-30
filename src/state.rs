@@ -341,6 +341,12 @@ impl AppState {
         config.pools.iter().find(|p| p.id == id).cloned()
     }
 
+    /// 获取对外API信息
+    pub fn get_exposed_api(&self, id: &str) -> Option<ExposedApi> {
+        let config = self.config.read();
+        config.exposed_apis.iter().find(|a| a.id == id).cloned()
+    }
+
     // ========== 对外API管理 ==========
 
     /// 添加对外API

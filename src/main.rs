@@ -171,6 +171,7 @@ async fn main() -> std::io::Result<()> {
             // 对外API管理
             .route("/admin/api/exposed-apis", web::get().to(admin::list_exposed_apis))
             .route("/admin/api/exposed-apis", web::post().to(admin::create_exposed_api))
+            .route("/admin/api/exposed-apis/{id}", web::get().to(admin::get_exposed_api))
             .route("/admin/api/exposed-apis/{id}", web::put().to(admin::update_exposed_api))
             .route("/admin/api/exposed-apis/{id}", web::delete().to(admin::delete_exposed_api))
             .route("/admin/api/exposed-apis/{id}/toggle", web::post().to(admin::toggle_exposed_api))

@@ -434,6 +434,20 @@ pub async fn check_endpoint(
 
 // ========== 池管理 ==========
 
+/// 获取单个对外API
+pub async fn get_exposed_api(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<String>,
+) -> Result<HttpResponse, AppError> {
+    check_admin_auth(&req, state.get_ref())?;
+    let id = path.into_inner();
+    let api = state
+        .get_exposed_api(&id)
+        .ok_or_else(|| AppError::NotFound(format!("对外API不存在: {}", id)))?;
+    Ok(HttpResponse::Ok().json(api))
+}
+
 /// 获取所有池
 pub async fn list_pools(
     state: web::Data<AppState>,

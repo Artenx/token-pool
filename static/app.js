@@ -856,6 +856,13 @@ async function editEndpoint(id, fromPool = false) {
     const ep = currentEndpoints.find(e => e.id === id);
     if (!ep) return;
 
+    // 清空上一次的测试结果/模型列表
+    const checkResult = document.getElementById('check-result');
+    if (checkResult) {
+        checkResult.style.display = 'none';
+        checkResult.innerHTML = '';
+    }
+
     document.getElementById('modal-title').textContent = '编辑端点';
     document.getElementById('ep-id').value = ep.id;
     document.getElementById('ep-name').value = ep.name;
@@ -2315,7 +2322,21 @@ async function editApi(id) {
     
     await loadPoolOptions('api-pool');
     document.getElementById('api-pool').value = api.pool_id;
-    
+
+    // 获取完整接口信息（stats 接口不返回 api_key），正确填充认证密钥
+    try {
+        const res = await fetch(`${API_BASE}/exposed-apis/${api.id}`);
+        if (res.ok) {
+            const fullApi = await res.json();
+            document.getElementById('api-key').value = fullApi.api_key || '';
+        } else {
+            document.getElementById('api-key').value = '';
+        }
+    } catch (e) {
+        console.error('加载接口详情失败:', e);
+        document.getElementById('api-key').value = '';
+    }
+
     // 更新完整 URL 显示
     updateApiFullUrlDisplay();
     
