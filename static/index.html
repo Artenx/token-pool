@@ -527,6 +527,47 @@
             </div>
         </div>
 
+        <!-- 池一键测试模态框 -->
+        <div id="pool-test-modal" class="modal" style="display:none; z-index: 1100;">
+            <div class="modal-content" style="max-width: 800px;">
+                <div class="modal-header">
+                    <h2 id="pool-test-title">池测试</h2>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <!-- 配置区域 -->
+                <div id="pool-test-config">
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 10px 14px; background: var(--bg-tertiary); border-radius: var(--radius-sm); margin-bottom: 8px;">
+                            <input type="radio" name="pool-test-mode" value="auto" checked onchange="onPoolTestModeChange()">
+                            <span style="font-weight: 500;">自动选择</span>
+                            <span style="font-size: 0.75rem; color: var(--text-tertiary);">每个端点自动选用其第一个可用模型</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 10px 14px; background: var(--bg-tertiary); border-radius: var(--radius-sm);">
+                            <input type="radio" name="pool-test-mode" value="manual" onchange="onPoolTestModeChange()">
+                            <span style="font-weight: 500;">手动指定模型</span>
+                            <span style="font-size: 0.75rem; color: var(--text-tertiary);">从端点模型列表中选择，自动匹配各端点的实际模型名</span>
+                        </label>
+                    </div>
+                    <div id="pool-test-model-select" style="display: none; margin-bottom: 16px;">
+                        <input type="text" id="pool-test-model-search" placeholder="搜索模型名称..." style="width: 100%; margin-bottom: 8px;">
+                        <div id="pool-test-models-list" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm);"></div>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn modal-close">取消</button>
+                        <button type="button" class="btn btn-primary" id="btn-start-pool-test">开始测试</button>
+                    </div>
+                </div>
+                <!-- 结果区域 -->
+                <div id="pool-test-results-area" style="display: none;">
+                    <div id="pool-test-summary" style="margin-bottom: 16px; padding: 12px; border-radius: var(--radius-sm);"></div>
+                    <div id="pool-test-results" style="max-height: 500px; overflow-y: auto;"></div>
+                    <div class="form-actions" style="margin-top: 16px;">
+                        <button type="button" class="btn modal-close">关闭</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div id="toast" class="toast" style="display:none"></div>
 
         <footer class="app-footer">
@@ -534,6 +575,6 @@
         </footer>
     </div>
 
-    <script src="app.js?v=4"></script>
+    <script src="app.js?v=5"></script>
 </body>
 </html>

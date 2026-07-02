@@ -81,6 +81,16 @@ impl AppState {
             .collect()
     }
 
+    /// 获取指定池中所有端点ID列表（含禁用和耗尽的端点）
+    pub fn endpoint_ids_in_pool(&self, pool_id: &str) -> Vec<String> {
+        let endpoints = self.endpoints.read();
+        endpoints
+            .values()
+            .filter(|ep| ep.config.pool_ids.contains(&pool_id.to_string()))
+            .map(|ep| ep.config.id.clone())
+            .collect()
+    }
+
     /// 获取端点状态
     pub fn get_endpoint(&self, id: &str) -> Option<EndpointState> {
         let endpoints = self.endpoints.read();

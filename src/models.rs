@@ -506,3 +506,38 @@ pub struct ExposedApiInfo {
     pub pool_name: Option<String>,
     pub endpoint_count: usize,
 }
+
+/// 池一键测试请求
+#[derive(Debug, Deserialize)]
+pub struct PoolTestRequest {
+    /// 手动模式：指定测试用的模型名称
+    #[serde(default)]
+    pub model: Option<String>,
+    /// 测试模式："auto" 自动选择模型（默认），"manual" 手动指定模型
+    #[serde(default = "default_test_mode")]
+    pub mode: String,
+}
+
+fn default_test_mode() -> String {
+    "auto".to_string()
+}
+
+/// 单个端点测试结果
+#[derive(Debug, Serialize)]
+pub struct EndpointTestResult {
+    pub endpoint_id: String,
+    pub endpoint_name: String,
+    pub success: bool,
+    pub message: String,
+    pub model_used: String,
+    pub status: u16,
+    pub tested_url: String,
+}
+
+/// 池测试汇总
+#[derive(Debug, Serialize)]
+pub struct PoolTestSummary {
+    pub total: usize,
+    pub success: usize,
+    pub failed: usize,
+}

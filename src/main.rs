@@ -168,6 +168,8 @@ async fn main() -> std::io::Result<()> {
             .route("/admin/api/pools", web::post().to(admin::create_pool))
             .route("/admin/api/pools/{id}", web::put().to(admin::update_pool))
             .route("/admin/api/pools/{id}", web::delete().to(admin::delete_pool))
+            .route("/admin/api/pools/{id}/models", web::get().to(admin::list_pool_models))
+            .route("/admin/api/pools/{id}/test-all", web::post().to(admin::test_pool_endpoints))
             // 对外API管理
             .route("/admin/api/exposed-apis", web::get().to(admin::list_exposed_apis))
             .route("/admin/api/exposed-apis", web::post().to(admin::create_exposed_api))

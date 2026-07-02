@@ -500,6 +500,214 @@ pub async fn delete_pool(
     })))
 }
 
+/// 获取池内所有端点的模型列表（去重合并）
+pub async fn list_pool_models(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<String>,
+) -> Result<HttpResponse, AppError> {
+    check_admin_auth(&req, state.get_ref())?;
+    let pool_id = path.into_inner();
+    let endpoint_ids = state.endpoint_ids_in_pool(&pool_id);
+
+    let mut all_models: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for ep_id in &endpoint_ids {
+        let cached = state.get_cached_models(ep_id);
+        let models = if let Some(c) = cached {
+            c
+        } else {
+            state.fetch_endpoint_models(ep_id).await.unwrap_or_default()
+        };
+
+        for m in models {
+            if seen.insert(m.clone()) {
+                all_models.push(m);
+            }
+        }
+    }
+
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "models": all_models,
+        "endpoint_count": endpoint_ids.len()
+    })))
+}
+
+/// 池一键测试：对池内所有端点进行对话测试
+pub async fn test_pool_endpoints(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<String>,
+    body: web::Json<PoolTestRequest>,
+) -> Result<HttpResponse, AppError> {
+    check_admin_auth(&req, state.get_ref())?;
+    let pool_id = path.into_inner();
+    let body = body.into_inner();
+
+    let endpoint_ids = state.endpoint_ids_in_pool(&pool_id);
+    let client = &state.http_client;
+    let pool = state.get_pool(&pool_id);
+
+    let mut results: Vec<EndpointTestResult> = Vec::new();
+
+    for ep_id in &endpoint_ids {
+        let ep_state = match state.get_endpoint(ep_id) {
+            Some(ep) => ep,
+            None => continue,
+        };
+        let ep_cfg = &ep_state.config;
+
+        // 确保模型缓存已填充
+        let cached_models = state.get_cached_models(ep_id);
+        if cached_models.is_none() {
+            let _ = state.fetch_endpoint_models(ep_id).await;
+        }
+
+        // 确定测试用的模型名称
+        let model_name = if body.mode == "manual" && body.model.is_some() {
+            let client_model = body.model.as_ref().unwrap();
+            if let Some(ref p) = pool {
+                state.resolve_model_for_endpoint(p, &ep_state, client_model)
+            } else {
+                client_model.clone()
+            }
+        } else {
+            let models = state.get_cached_models(ep_id).unwrap_or_default();
+            models.first().cloned().unwrap_or_else(|| {
+                match ep_cfg.api_type {
+                    crate::models::ApiType::OpenAI | crate::models::ApiType::OpenAIResponses => "gpt-3.5-turbo".to_string(),
+                    crate::models::ApiType::Anthropic => "claude-3-haiku-20240307".to_string(),
+                }
+            })
+        };
+
+        // 构建测试请求
+        let base_url = ep_cfg.url.trim_end_matches('/');
+        let (chat_url, chat_body, request_builder) = match ep_cfg.api_type {
+            crate::models::ApiType::OpenAI => {
+                let url = if base_url.ends_with("/v1") || base_url.ends_with("/v1/") {
+                    format!("{}/chat/completions", base_url)
+                } else {
+                    format!("{}/v1/chat/completions", base_url)
+                };
+                let body = serde_json::json!({
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 10
+                });
+                let builder = client.post(&url)
+                    .header("Authorization", format!("Bearer {}", ep_cfg.api_key))
+                    .header("Content-Type", "application/json");
+                (url, body, builder)
+            }
+            crate::models::ApiType::OpenAIResponses => {
+                let url = if base_url.ends_with("/v1") || base_url.ends_with("/v1/") {
+                    format!("{}/responses", base_url)
+                } else {
+                    format!("{}/v1/responses", base_url)
+                };
+                let body = serde_json::json!({
+                    "model": model_name,
+                    "input": "hi",
+                    "max_output_tokens": 10
+                });
+                let builder = client.post(&url)
+                    .header("Authorization", format!("Bearer {}", ep_cfg.api_key))
+                    .header("Content-Type", "application/json");
+                (url, body, builder)
+            }
+            crate::models::ApiType::Anthropic => {
+                let url = if base_url.ends_with("/v1") || base_url.ends_with("/v1/") {
+                    format!("{}/messages", base_url)
+                } else {
+                    format!("{}/v1/messages", base_url)
+                };
+                let body = serde_json::json!({
+                    "model": model_name,
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": "hi"}]
+                });
+                let builder = client.post(&url)
+                    .header("x-api-key", &ep_cfg.api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .header("Content-Type", "application/json");
+                (url, body, builder)
+            }
+        };
+
+        // 发送测试请求
+        match request_builder
+            .timeout(std::time::Duration::from_secs(10))
+            .body(chat_body.to_string())
+            .send()
+            .await
+        {
+            Ok(response) => {
+                let status = response.status();
+                let response_text = response.text().await.unwrap_or_default();
+
+                if status.is_success() {
+                    let reply = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response_text) {
+                        json["choices"][0]["message"]["content"].as_str()
+                            .or_else(|| {
+                                json["content"][0]["text"].as_str()
+                            })
+                            .unwrap_or("无回复")
+                            .to_string()
+                    } else {
+                        "响应解析失败".to_string()
+                    };
+
+                    results.push(EndpointTestResult {
+                        endpoint_id: ep_id.clone(),
+                        endpoint_name: ep_cfg.name.clone(),
+                        success: true,
+                        message: reply,
+                        model_used: model_name,
+                        status: status.as_u16(),
+                        tested_url: chat_url,
+                    });
+                } else {
+                    results.push(EndpointTestResult {
+                        endpoint_id: ep_id.clone(),
+                        endpoint_name: ep_cfg.name.clone(),
+                        success: false,
+                        message: format!("请求失败 (HTTP {}): {}", status, &response_text[..response_text.len().min(200)]),
+                        model_used: model_name,
+                        status: status.as_u16(),
+                        tested_url: chat_url,
+                    });
+                }
+            }
+            Err(e) => {
+                results.push(EndpointTestResult {
+                    endpoint_id: ep_id.clone(),
+                    endpoint_name: ep_cfg.name.clone(),
+                    success: false,
+                    message: format!("连接失败: {}", e),
+                    model_used: model_name,
+                    status: 0,
+                    tested_url: chat_url,
+                });
+            }
+        }
+    }
+
+    let summary = PoolTestSummary {
+        total: results.len(),
+        success: results.iter().filter(|r| r.success).count(),
+        failed: results.iter().filter(|r| !r.success).count(),
+    };
+
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "results": results,
+        "summary": summary
+    })))
+}
+
 // ========== 对外API管理 ==========
 
 /// 获取所有对外API

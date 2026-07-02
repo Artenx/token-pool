@@ -248,6 +248,12 @@ function initEventListeners() {
         btnBrowseModelsForm.addEventListener('click', handleBrowseModelsForm);
     }
 
+    // 池一键测试开始按钮
+    const btnStartPoolTest = document.getElementById('btn-start-pool-test');
+    if (btnStartPoolTest) {
+        btnStartPoolTest.addEventListener('click', startPoolTest);
+    }
+
     // 对话测试按钮
     document.getElementById('btn-check-endpoint').addEventListener('click', handleCheckEndpoint);
 
@@ -2139,12 +2145,176 @@ function renderPoolsList() {
                 </div>
                 
                 <div class="endpoint-actions" style="margin-top: 12px;">
+                    <button class="btn btn-small" onclick="handlePoolTest('${escapeAttr(pool.id)}', '${escapeAttr(pool.name)}')" style="background: var(--accent); color: #fff;">一键测试</button>
                     <button class="btn btn-small" onclick="editPool('${escapeAttr(pool.id)}')">编辑池</button>
                     <button class="btn btn-small btn-danger" onclick="deletePool('${escapeAttr(pool.id)}')">删除池</button>
                 </div>
             </div>
         `;
     }).join('');
+}
+
+// 池一键测试
+let currentPoolTestId = null;
+let currentPoolTestName = null;
+let currentPoolTestModels = [];
+
+async function handlePoolTest(poolId, poolName) {
+    currentPoolTestId = poolId;
+    currentPoolTestName = poolName;
+
+    const title = document.getElementById('pool-test-title');
+    title.textContent = `池测试: ${poolName}`;
+
+    // 重置到配置阶段
+    showConfigPhase();
+
+    // 加载模型列表
+    const modelsList = document.getElementById('pool-test-models-list');
+    modelsList.innerHTML = '<p style="color: var(--text-secondary); padding: 16px; text-align: center;">加载模型列表...</p>';
+
+    showModal('pool-test-modal');
+
+    try {
+        const res = await fetch(`${API_BASE}/pools/${poolId}/models`);
+        const data = await res.json();
+        if (data.success && data.models) {
+            currentPoolTestModels = data.models;
+            renderPoolTestModelList(data.models);
+        } else {
+            modelsList.innerHTML = '<p style="color: var(--text-tertiary); padding: 16px; text-align: center;">无法获取模型列表，将使用自动模式</p>';
+        }
+    } catch (e) {
+        modelsList.innerHTML = `<p style="color: #f44336; padding: 16px;">加载失败: ${escapeHtml(e.message)}</p>`;
+    }
+}
+
+function showConfigPhase() {
+    document.getElementById('pool-test-config').style.display = 'block';
+    document.getElementById('pool-test-results-area').style.display = 'none';
+    document.querySelector('input[name="pool-test-mode"][value="auto"]').checked = true;
+    document.getElementById('pool-test-model-select').style.display = 'none';
+}
+
+function onPoolTestModeChange() {
+    const mode = document.querySelector('input[name="pool-test-mode"]:checked').value;
+    document.getElementById('pool-test-model-select').style.display = mode === 'manual' ? 'block' : 'none';
+    if (mode === 'manual' && currentPoolTestModels.length > 0) {
+        renderPoolTestModelList(currentPoolTestModels);
+    }
+}
+
+function renderPoolTestModelList(models) {
+    const container = document.getElementById('pool-test-models-list');
+    const searchInput = document.getElementById('pool-test-model-search');
+    searchInput.value = '';
+
+    const render = (filter) => {
+        const filtered = filter ? models.filter(m => m.toLowerCase().includes(filter.toLowerCase())) : models;
+        container.innerHTML = filtered.map((m, i) => `
+            <div style="display: flex; align-items: center; padding: 10px 12px; background: var(--bg-tertiary); border-bottom: 1px solid var(--border); cursor: pointer;"
+                 onclick="selectPoolTestModel('${escapeAttr(m)}', this)">
+                <input type="radio" name="pool-test-selected-model" value="${escapeAttr(m)}" ${i === 0 ? 'checked' : ''} style="margin-right: 12px;">
+                <span style="flex: 1; font-family: var(--font-mono); font-size: 0.8125rem;">${escapeHtml(m)}</span>
+            </div>
+        `).join('');
+    };
+
+    render(null);
+
+    searchInput.oninput = () => render(searchInput.value);
+}
+
+function selectPoolTestModel(modelName, el) {
+    el.querySelector('input').checked = true;
+}
+
+async function startPoolTest() {
+    const mode = document.querySelector('input[name="pool-test-mode"]:checked').value;
+    let selectedModel = null;
+
+    if (mode === 'manual') {
+        const checked = document.querySelector('input[name="pool-test-selected-model"]:checked');
+        if (!checked) {
+            showToast('请选择一个模型', 'error');
+            return;
+        }
+        selectedModel = checked.value;
+    }
+
+    // 切换到结果阶段
+    document.getElementById('pool-test-config').style.display = 'none';
+    document.getElementById('pool-test-results-area').style.display = 'block';
+
+    const summaryEl = document.getElementById('pool-test-summary');
+    const resultsEl = document.getElementById('pool-test-results');
+    summaryEl.style.background = 'rgba(33, 150, 243, 0.1)';
+    summaryEl.style.border = '1px solid rgba(33, 150, 243, 0.3)';
+    summaryEl.innerHTML = '<span style="color: #2196f3; font-weight: 500;">正在测试所有端点...</span>';
+    resultsEl.innerHTML = '<p style="color: var(--text-secondary); text-align: center; padding: 32px;">正在发送测试请求，请稍候...</p>';
+
+    try {
+        const body = { mode: mode };
+        if (selectedModel) body.model = selectedModel;
+
+        const res = await fetch(`${API_BASE}/pools/${currentPoolTestId}/test-all`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+
+        if (!data.results || data.results.length === 0) {
+            summaryEl.style.background = 'rgba(255, 152, 0, 0.1)';
+            summaryEl.style.border = '1px solid rgba(255, 152, 0, 0.3)';
+            summaryEl.innerHTML = '<span style="color: #ff9800; font-weight: 500;">该池下没有可测试的端点</span>';
+            resultsEl.innerHTML = '<p style="color: var(--text-tertiary); text-align: center; padding: 16px;">请先添加端点到该池</p>';
+            return;
+        }
+
+        const summary = data.summary;
+        const allOk = summary.failed === 0;
+        summaryEl.style.background = allOk ? 'rgba(76, 175, 80, 0.1)' : 'rgba(244, 67, 54, 0.1)';
+        summaryEl.style.border = allOk ? '1px solid rgba(76, 175, 80, 0.3)' : '1px solid rgba(244, 67, 54, 0.3)';
+        summaryEl.innerHTML = `
+            <div style="display: flex; gap: 24px; align-items: center;">
+                <span style="font-weight: 600; color: ${allOk ? '#4caf50' : '#f44336'};">
+                    ${allOk ? '全部通过' : '部分失败'}
+                </span>
+                <span style="font-size: 0.875rem; color: var(--text-secondary);">总计: <strong>${summary.total}</strong></span>
+                <span style="font-size: 0.875rem; color: #4caf50;">成功: <strong>${summary.success}</strong></span>
+                <span style="font-size: 0.875rem; color: #f44336;">失败: <strong>${summary.failed}</strong></span>
+            </div>
+        `;
+
+        resultsEl.innerHTML = data.results.map(r => {
+            const statusColor = r.success ? '#4caf50' : '#f44336';
+            const borderColor = r.success ? 'var(--accent)' : '#f44336';
+            const statusText = r.success ? '成功' : '失败';
+            const statusClass = r.success ? 'active' : 'disabled';
+
+            return `
+                <div style="padding: 12px; background: var(--bg-primary); border-radius: var(--radius-sm); margin-bottom: 8px; border-left: 3px solid ${borderColor};">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <span style="font-weight: 500; font-size: 0.875rem;">${escapeHtml(r.endpoint_name)}</span>
+                        <span class="status-badge ${statusClass}" style="font-size: 0.625rem; background: ${statusColor}20; color: ${statusColor};">${statusText}</span>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 8px;">
+                        <span>模型: ${escapeHtml(r.model_used)}</span>
+                        <span>HTTP ${r.status}</span>
+                    </div>
+                    <div style="font-size: 0.8125rem; color: ${r.success ? 'var(--text-primary)' : '#f44336'}; padding: 6px 10px; background: var(--bg-tertiary); border-radius: var(--radius-sm); word-break: break-all;">
+                        ${escapeHtml(r.message)}
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch (e) {
+        summaryEl.style.background = 'rgba(244, 67, 54, 0.1)';
+        summaryEl.style.border = '1px solid rgba(244, 67, 54, 0.3)';
+        summaryEl.innerHTML = '<span style="color: #f44336; font-weight: 500;">测试请求失败</span>';
+        resultsEl.innerHTML = `<p style="color: #f44336; padding: 16px;">${escapeHtml(e.message)}</p>`;
+    }
 }
 
 // ========== 端点映射配置 ==========
